@@ -5,5 +5,5 @@ A pip-compatible Python package bundling personal utility modules for reuse acro
 ## Installation
 
 ```bash
-pip install glakit
+pip install git+https://github.com/gabriel-lepetitaimon/glakit.git
 ```

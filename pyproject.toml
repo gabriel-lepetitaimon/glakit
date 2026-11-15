@@ -7,20 +7,32 @@ name = "glakit"
 version = "0.1.0"
 description = "Personal Python utility toolkit"
 readme = "README.md"
-requires-python = ">=3.8"
-authors = [
-  { name = "Gabriel Le Petit Aimon" }
-]
+requires-python = ">=3.12"
+authors = [{ name = "Gabriel Lepetit-Aimon" }]
 keywords = ["utilities", "toolkit", "glakit"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "License :: OSI Approved :: MIT License",
-  "Operating System :: OS Independent"
+  "Operating System :: OS Independent",
+]
+
+dependencies = ["numpy>=1.25", "webcolors>=1.1.0"]
+
+[dependency-groups]
+dev = [
+  'sphinx',           # Documentation generator
+  'sphinx-rtd-theme', # Read the docs theme
+  'pytest',           # To run tests
 ]
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+
+[tool.pytest.ini_options]
+addopts = "--doctest-modules src/glakit --doctest-report ndiff -v"
+testpaths = ["tests"]
+doctest_optionflags = ["NORMALIZE_WHITESPACE", "ELLIPSIS"]
