@@ -1,2 +1,9 @@
 # glakit
-A python library bundling all my utility classes used accross projects.
+
+A pip-compatible Python package bundling personal utility modules for reuse across projects.
+
+## Installation
+
+```bash
+pip install glakit
+```
