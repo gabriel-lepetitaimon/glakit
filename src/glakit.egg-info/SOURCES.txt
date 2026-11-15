@@ -1,0 +1,8 @@
+LICENSE
+README.md
+pyproject.toml
+src/glakit/__init__.py
+src/glakit.egg-info/PKG-INFO
+src/glakit.egg-info/SOURCES.txt
+src/glakit.egg-info/dependency_links.txt
+src/glakit.egg-info/top_level.txt
