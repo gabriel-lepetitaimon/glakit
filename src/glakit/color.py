@@ -264,9 +264,13 @@ class _BaseRGBColor[
         max_vals = np.asarray(self.channel_max_values()[:3], dtype=np.float64)
         scaled = np.rint(np.clip(arr / max_vals, 0.0, 1.0) * 255).astype(np.uint8)
         try:
-            return webcolors.rgb_to_name((int(scaled[0]), int(scaled[1]), int(scaled[2])))
+            name = webcolors.rgb_to_name((int(scaled[0]), int(scaled[1]), int(scaled[2])))
         except ValueError:
             raise ValueError(f"Color {self.to_hex()} does not have a named representation.") from None
+        if self.num_channels() == 4 and self.view(np.ndarray)[3] < max_vals[3]:
+            return f"{name} (alpha={self.view(np.ndarray)[3] / max_vals[3]:.1%})"
+        else:
+            return name
 
     def as_rgb(self) -> RGB:
         """Convert to an 8-bit RGB color (dropping alpha if present)."""
@@ -302,6 +306,12 @@ class _BaseRGBColor[
             except TypeError as e:
                 raise ValueError(str(e)) from e
 
+        def serialize_hex(col: Self) -> str:
+            hex_str = col.to_hex()
+            if len(hex_str) == 9 and hex_str.endswith("ff"):
+                return hex_str[:7]
+            return hex_str
+
         n_channels = cls.num_channels()
         item_schema = core_schema.float_schema() if np.issubdtype(cls._DTYPE, np.floating) else core_schema.int_schema()
         tuple_schema = core_schema.tuple_schema([item_schema] * n_channels)
@@ -316,8 +326,8 @@ class _BaseRGBColor[
             ),
             python_schema=core_schema.no_info_plain_validator_function(validate),
             serialization=core_schema.plain_serializer_function_ser_schema(
-                lambda col: col.tuple,
-                return_schema=tuple_schema,
+                serialize_hex,
+                return_schema=core_schema.str_schema(),
             ),
         )
 

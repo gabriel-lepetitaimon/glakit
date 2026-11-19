@@ -249,6 +249,13 @@ class TestPointArray:
         assert d2.shape == (2, 2)
         np.testing.assert_allclose(d2, [[0.0, 10.0], [5.0, 5.0]])
 
+    def test_promotion(self):
+        p = Point(1.0, 2.0)
+        p + np.array([[1.0, 2.0], [3.0, 4.0]])
+        arr = PointArray([p])
+        assert isinstance(p + arr, PointArray)
+        assert isinstance(arr + p, PointArray)
+
 
 class TestIntPointArray:
     def test_creation_and_promotion(self):
@@ -283,9 +290,16 @@ class TestIntPointArray:
 
 class TestRect:
     def test_creation_and_normalization(self):
-        # Inverted corners are normalized automatically
         r = Rect((10, 20), (0, 5))
         assert isinstance(r, Rect)
+        assert r.p0 == Point(10.0, 20.0)
+        assert r.p1 == Point(0.0, 5.0)
+        assert r.center == Point(5.0, 12.5)
+        assert r.signed_sizes == Point(-10.0, -15.0)
+        assert r.signed_h == -10.0
+        assert r.signed_w == -15.0
+
+        # Ensure top_left and bottom_right ensure positive sizes even if p0 and p1 are not ordered
         assert r.top_left == Point(0.0, 5.0)
         assert r.bottom_right == Point(10.0, 20.0)
         assert r.top_right == Point(0.0, 20.0)
@@ -297,7 +311,6 @@ class TestRect:
         assert r.h == 10.0
         assert r.w == 15.0
         assert r.area == 150.0
-        assert r.center == Point(5.0, 12.5)
 
         # Single PointLike creates Rect from origin (0, 0)
         r_single = Rect((10, 20))
@@ -364,7 +377,7 @@ class TestRect:
         r = Rect((10, 20), (30, 40))
         assert r.pad(5) == Rect((5, 15), (35, 45))
         assert r.pad(2, 4) == Rect((8, 16), (32, 44))
-        assert r.pad(1, 2, 3, 4) == Rect((9, 16), (33, 42))
+        assert r.pad(1, 2, 3, 4) == Rect((9, 18), (33, 44))
 
         pts = PointArray([(5, 25), (15, 50), (35, 30)])
         cropped = r.crop(pts)

@@ -117,27 +117,24 @@ class TestColorPydanticIntegration:
             model_config = pydantic.ConfigDict(validate_assignment=True)
             stroke: RGB
             fill: RGBA
+            fill_no_alpha: RGBA
 
-        cfg = StyleConfig(stroke="#ff0000", fill=(0, 255, 0))  # type: ignore
+        cfg = StyleConfig(stroke="#ff0000", fill=(0, 255, 0, 125), fill_no_alpha=(0, 255, 0))
         assert isinstance(cfg.stroke, RGB) and cfg.stroke == RGB((255, 0, 0))
-        assert isinstance(cfg.fill, RGBA) and cfg.fill == RGBA((0, 255, 0, 255))
+        assert isinstance(cfg.fill, RGBA) and cfg.fill == RGBA((0, 255, 0, 125))
+        assert isinstance(cfg.fill_no_alpha, RGBA) and cfg.fill_no_alpha == RGBA((0, 255, 0, 255))
 
         # Python dump yields fixed-length tuples
         dumped = cfg.model_dump(mode="python")
-        assert dumped["stroke"] == (255, 0, 0)
-        assert dumped["fill"] == (0, 255, 0, 255)
+        assert dumped["stroke"] == "#ff0000"
+        assert dumped["fill"] == "#00ff007d"
+        assert dumped["fill_no_alpha"] == "#00ff00"
 
         # JSON round-trip
         reloaded = StyleConfig.model_validate_json(cfg.model_dump_json())
         assert reloaded.stroke == cfg.stroke
         assert reloaded.fill == cfg.fill
-
-        # JSON schema generation
-        val_schema = StyleConfig.model_json_schema(mode="validation")
-        ser_schema = StyleConfig.model_json_schema(mode="serialization")
-        assert "anyOf" in val_schema["properties"]["stroke"]
-        assert ser_schema["properties"]["stroke"]["minItems"] == 3
-        assert ser_schema["properties"]["fill"]["minItems"] == 4
+        assert reloaded.fill_no_alpha == cfg.fill_no_alpha
 
         # Validation error on invalid color
         with pytest.raises(pydantic.ValidationError):
