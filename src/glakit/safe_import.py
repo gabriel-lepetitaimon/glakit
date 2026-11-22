@@ -22,7 +22,7 @@ def __getattr__(name: str) -> ModuleType:
     return module
 
 
-def import_cv2(package: str | None = None) -> ModuleType:
+def import_cv2(package: str | None = None) -> type[cv2]:
     try:
         os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 

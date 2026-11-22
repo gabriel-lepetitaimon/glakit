@@ -297,6 +297,62 @@ def test_warp_translation_and_affine() -> None:
     assert warped_chw.shape == (2, 10, 12)
 
 
+def test_warp_advanced_domains_and_subpixel() -> None:
+    # Image test 10x12 avec un bloc blanc en [2:5, 3:7]
+    img = np.zeros((10, 12), dtype=np.uint8)
+    img[2:5, 3:7] = 255
+
+    # 1. Translation avec src_top_left != (0, 0) et warped_domain personnalisé
+    T_trans = Translation((3, 4))
+    # L'image source occupe (10, 20) -> (20, 32). Après translation (3, 4), elle occupe (13, 24) -> (23, 36).
+    # Le bloc blanc [2:5, 3:7] se retrouve donc en coordonnées monde [15:18, 27:31].
+    custom_domain = IntRect((14, 26), (20, 33))  # taille (6, 7)
+    warped, w_domain = T_trans.warp(img, src_top_left=(10, 20), warped_domain=custom_domain)
+    assert w_domain == custom_domain
+    assert warped.shape == (6, 7)
+    expected = np.zeros((6, 7), dtype=np.uint8)
+    expected[1:4, 1:5] = 255  # [15:18, 27:31] relatif à (14, 26)
+    np.testing.assert_array_equal(warped, expected)
+
+    # 2. Translation sub-pixellaire (doit interpoler et non tronquer à l'entier)
+    img_f32 = np.zeros((6, 6), dtype=np.float32)
+    img_f32[2, 2] = 1.0
+    T_sub = Translation((0.5, 0.5))
+    warped_sub, _ = T_sub.warp(img_f32, warped_domain="same")
+    assert warped_sub.dtype == np.float32
+    # Le pic à (2, 2) déplacé de (+0.5, +0.5) doit se répartir à 0.25 sur (2,2), (2,3), (3,2), (3,3)
+    np.testing.assert_allclose(warped_sub[2:4, 2:4], 0.25, atol=1e-5)
+
+    # 3. ResizeTranslation avec warped_domain personnalisé (vérifie que cv2.resize ne déforme pas)
+    T_resize = ResizeTranslation(s=(2.0, 2.0), t=(10.0, 20.0))
+    # Source (10, 12) placée en (5, 5) -> (15, 17).
+    # Après s=2, t=(10, 20) -> domaine (20, 30) -> (40, 54).
+    # Le bloc blanc [2:5, 3:7] (en monde [7:10, 8:12]) devient [24:30, 36:44].
+    crop_domain = IntRect((22, 34), (32, 46))  # taille (10, 12)
+    warped_res, w_res_domain = T_resize.warp(img, src_top_left=(5, 5), warped_domain=crop_domain)
+    assert w_res_domain == crop_domain
+    assert warped_res.shape == (10, 12)
+    expected_res = np.zeros((10, 12), dtype=np.uint8)
+    expected_res[2:8, 2:10] = 255  # [24:30, 36:44] relatif à (22, 34)
+    np.testing.assert_array_equal(warped_res, expected_res)
+
+    # 4. AffineTransform (rotation 90° horaire autour d'un centre décalé)
+    # Image carrée 10x10 placée à src_top_left=(100, 200) -> domaine (100, 200) -> (110, 210)
+    sq_img = np.zeros((10, 10), dtype=np.uint8)
+    sq_img[1:3, 2:6] = 200  # bande horizontale en haut
+    center = Point(105.0, 205.0)
+    T_rot = AffineTransform.rotate(90.0, center=center)
+    warped_rot, w_rot_domain = T_rot.warp(sq_img, src_top_left=(100, 200), warped_domain="full")
+    assert w_rot_domain == IntRect((100, 200), (110, 210))
+    assert warped_rot.shape == (10, 10)
+    # Vérifie que le centroïde des pixels non nuls correspond à la rotation théorique
+    yy, xx = np.nonzero(warped_rot > 100)
+    warped_centroid = Point(float(yy.mean()), float(xx.mean())) + w_rot_domain.top_left
+    src_yy, src_xx = np.nonzero(sq_img > 100)
+    expected_centroid = T_rot(Point(float(src_yy.mean()) + 100.0, float(src_xx.mean()) + 200.0))
+    assert np.allclose(warped_centroid, expected_centroid, atol=0.5)
+
+
 def test_draw_grid() -> None:
     domain = IntRect((0, 0), (100, 100))
     T = ResizeTranslation(s=0.5, t=(10, 10))

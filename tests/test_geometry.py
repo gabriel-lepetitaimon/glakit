@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import math
+from typing import Literal
 
 import numpy as np
 import pytest
+from pydantic import BaseModel, ValidationError
 
 from glakit.geometry import (
     IntPoint,
     IntPointArray,
+    IntPointMap,
     IntRect,
     Point,
     PointArray,
+    PointMap,
     Rect,
+    VectorMap,
+    as_int_point_map,
+    as_point_map,
+    as_vector_map,
     crop_pad_slices,
 )
 
@@ -251,8 +259,7 @@ class TestPointArray:
 
     def test_promotion(self):
         p = Point(1.0, 2.0)
-        p + np.array([[1.0, 2.0], [3.0, 4.0]])
-        arr = PointArray([p])
+        arr = PointArray([[1.0, 2.0], [3.0, 4.0]])
         assert isinstance(p + arr, PointArray)
         assert isinstance(arr + p, PointArray)
 
@@ -281,6 +288,240 @@ class TestIntPointArray:
         res_float = ipts + (0.5, 0.5)
         assert isinstance(res_float, PointArray)
         assert res_float[0] == Point(1.5, 2.5)
+
+
+# =====================================================================
+# Tests for Rect and IntRect
+# =====================================================================
+class TestPointMaps:
+    # =========================================================================
+    # 1. Construction, dtypes & zéro-copie
+    # =========================================================================
+    def test_zeros_and_dtypes(self) -> None:
+        pm = PointMap.zeros((3, 4))
+        ipm = IntPointMap.zeros((3, 4))
+        vm = VectorMap.zeros((3, 4))
+
+        assert pm.shape == (3, 4, 2) and pm.dtype == np.float64
+        assert ipm.shape == (3, 4, 2) and ipm.dtype == np.int64
+        assert vm.shape == (3, 4, 2) and vm.dtype == np.float32
+
+    def test_as_map_zero_copy_when_matching_dtype(self) -> None:
+        arr_f32 = np.ones((2, 3, 2), dtype=np.float32)
+        arr_f64 = np.ones((2, 3, 2), dtype=np.float64)
+        arr_i64 = np.ones((2, 3, 2), dtype=np.int64)
+
+        vm = as_vector_map(arr_f32, copy=False)
+        pm = as_point_map(arr_f64, copy=False)
+        ipm = as_int_point_map(arr_i64, copy=False)
+
+        assert isinstance(vm, VectorMap) and np.shares_memory(vm, arr_f32)
+        assert isinstance(pm, PointMap) and np.shares_memory(pm, arr_f64)
+        assert isinstance(ipm, IntPointMap) and np.shares_memory(ipm, arr_i64)
+
+    def test_construction_from_nested_sequences(self) -> None:
+        data = [[(0.5, 1.5), (2.0, 3.0)], [(4.5, 5.5), (6.0, 7.0)]]
+        vm = VectorMap(data)
+        pm = PointMap(data)
+
+        assert isinstance(vm, VectorMap) and vm.dtype == np.float32
+        assert isinstance(pm, PointMap) and pm.dtype == np.float64
+        np.testing.assert_allclose(vm.ndarray, pm.ndarray)
+
+    def test_int_point_map_rejects_fractional_floats(self) -> None:
+        with pytest.raises(TypeError):
+            IntPointMap([[(0.5, 1.5)]])
+
+        # Des floats à valeur entière doivent en revanche être acceptés sans perte
+        ipm = IntPointMap([[(1.0, 2.0), (3.0, 4.0)]])
+        assert isinstance(ipm, IntPointMap) and ipm.dtype == np.int64
+
+    def test_cross_conversions(self) -> None:
+        pm = PointMap([[(1.2, 2.7), (-3.6, 4.1)]])
+
+        vm = pm.as_vector()
+        assert isinstance(vm, VectorMap) and vm.dtype == np.float32
+        np.testing.assert_allclose(vm.ndarray, pm.ndarray, rtol=1e-6)
+
+        ipm = vm.as_int()
+        assert isinstance(ipm, IntPointMap) and ipm.dtype == np.int64
+        np.testing.assert_array_equal(ipm.ndarray, np.array([[[1, 3], [-4, 4]]]))
+
+        pm_back = ipm.as_float()
+        assert isinstance(pm_back, PointMap) and pm_back.dtype == np.float64
+
+    # =========================================================================
+    # 2. Indexation, slicing, assignation & propriétés
+    # =========================================================================
+    def test_indexing_and_slicing(self) -> None:
+        vm = VectorMap([[(1.0, 2.0), (3.0, 4.0)], [(5.0, 6.0), (7.0, 8.0)]])
+        ipm = IntPointMap([[(1, 2), (3, 4)], [(5, 6), (7, 8)]])
+
+        # Accès à un élément (y, x) -> Point / IntPoint
+        pt = vm[0, 1]
+        assert isinstance(pt, Point) and pt == Point(3.0, 4.0)
+        ipt = ipm[0, 1]
+        assert isinstance(ipt, IntPoint) and ipt == IntPoint(3, 4)
+
+        # Accès à une ligne -> PointArray / IntPointArray
+        row = vm[1]
+        assert isinstance(row, PointArray) and row.shape == (2, 2)
+        irow = ipm[1]
+        assert isinstance(irow, IntPointArray) and irow.shape == (2, 2)
+
+        # Slicing 2D -> conserve le type de Map
+        sub_vm = vm[:, :1]
+        assert isinstance(sub_vm, VectorMap) and sub_vm.shape == (2, 1, 2) and sub_vm.dtype == np.float32
+
+        # Extraction d'une composante -> ndarray brut 2D
+        assert type(vm.y) is np.ndarray and vm.y.dtype == np.float32
+        assert type(vm.x) is np.ndarray and vm.x.dtype == np.float32
+        assert type(vm[..., 0]) is np.ndarray
+
+    def test_item_assignment(self) -> None:
+        vm = VectorMap.zeros((2, 2))
+        vm[0, 0] = (1.5, 2.5)
+        vm[1] = [(3.0, 4.0), (5.0, 6.0)]
+        assert vm.dtype == np.float32
+        assert vm[0, 0] == Point(1.5, 2.5)
+        assert vm[1, 1] == Point(5.0, 6.0)
+
+        ipm = IntPointMap.zeros((2, 2))
+        ipm[0, 0] = (2, 3)
+        assert ipm[0, 0] == IntPoint(2, 3)
+
+        with pytest.raises(TypeError):
+            ipm[0, 1] = (1.5, 2.5)  # type: ignore
+
+    def test_flatten_as_array(self) -> None:
+        vm = VectorMap.zeros((3, 4))
+        flat = vm.as_array()
+        assert isinstance(flat, PointArray)
+        assert flat.shape == (12, 2)
+
+    # =========================================================================
+    # 3. Règles de promotion arithmétique (IntPointMap < VectorMap < PointMap)
+    # =========================================================================
+    def test_vector_map_preserves_float32_with_scalars_and_tuples(self) -> None:
+        vm = VectorMap([[(1.0, 2.0), (3.0, 4.0)]])
+
+        # Scalaires Python (int & float) -> doit rester VectorMap (float32)
+        res_mul_int = vm * 2
+        res_mul_float = vm * 0.5
+        res_div = vm / 2
+        res_add_scalar = vm + 1.5
+        res_rsub = 10.0 - vm
+
+        for res in (res_mul_int, res_mul_float, res_div, res_add_scalar, res_rsub):
+            assert isinstance(res, VectorMap)
+            assert res.dtype == np.float32
+
+        # Tuples/listes de littéraux Python -> doit rester VectorMap (float32)
+        res_tuple = vm + (0.5, 1.5)
+        res_list = vm - [(0.5, 0.5), (1.5, 1.5)]
+        assert isinstance(res_tuple, VectorMap) and res_tuple.dtype == np.float32
+        assert isinstance(res_list, VectorMap) and res_list.dtype == np.float32
+        np.testing.assert_allclose(res_tuple.ndarray, np.array([[[1.5, 3.5], [3.5, 5.5]]], dtype=np.float32))
+
+    def test_arithmetic_promotion_hierarchy(self) -> None:
+        ipm = IntPointMap([[(1, 2), (3, 4)]])
+        vm = VectorMap([[(0.5, 0.5), (1.5, 1.5)]])
+        pm = PointMap([[(10.0, 20.0), (30.0, 40.0)]])
+
+        # IntPointMap + IntPointMap -> IntPointMap
+        r_ii = ipm + ipm
+        assert isinstance(r_ii, IntPointMap) and r_ii.dtype == np.int64
+
+        # IntPointMap + (0.5, 1.5) -> PointMap (float64)
+        r_if = ipm + (0.5, 1.5)
+        assert isinstance(r_if, PointMap) and r_if.dtype == np.float64
+
+        # VectorMap + IntPointMap -> PointMap (float32)
+        r_vi = vm + ipm
+        assert isinstance(r_vi, PointMap) and r_vi.dtype == np.float64
+
+        # VectorMap + VectorMap -> VectorMap (float32)
+        r_vv = vm + vm
+        assert isinstance(r_vv, VectorMap) and r_vv.dtype == np.float32
+
+        # VectorMap + Point (explicit float64) -> PointMap (float64)
+        r_vpt = vm + Point(1.0, 2.0)
+        assert isinstance(r_vpt, PointMap) and r_vpt.dtype == np.float64
+
+        # VectorMap + PointMap -> PointMap (float64)
+        r_vp = vm + pm
+        assert isinstance(r_vp, PointMap) and r_vp.dtype == np.float64
+
+        # Réduction sur un axe (axis=0) -> PointArray
+        col_mean = np.mean(vm, axis=0)
+        assert isinstance(col_mean, PointArray)
+
+    # =========================================================================
+    # 4. Opérations géométriques et vectorielles
+    # =========================================================================
+    def test_norm_angle_and_normalized(self) -> None:
+        # Vecteurs (y, x): (3, 4) -> norme 5 ; (0, 0) -> vecteur nul ; (0, 2) -> angle 0
+        vm = VectorMap([[(3.0, 4.0), (0.0, 0.0), (0.0, 2.0)]])
+
+        n = vm.norm
+        assert n.dtype == np.float32
+        np.testing.assert_allclose(n, np.array([[5.0, 0.0, 2.0]], dtype=np.float32))
+
+        ang = vm.angle()
+        assert ang.dtype == np.float32
+        np.testing.assert_allclose(ang[0, 2], 0.0)
+
+        normed = vm.normalized()
+        assert isinstance(normed, VectorMap) and normed.dtype == np.float32
+        np.testing.assert_allclose(normed.ndarray, np.array([[[0.6, 0.8], [0.0, 0.0], [0.0, 1.0]]], dtype=np.float32))
+
+        # Vérifie que PointMap.normalized() retourne bien un PointMap (float64)
+        pm_normed = vm.as_float().normalized()
+        assert isinstance(pm_normed, PointMap) and pm_normed.dtype == np.float64
+
+    def test_dot_and_cross_products(self) -> None:
+        # Vecteurs (y, x)
+        v1 = VectorMap([[(0.0, 1.0), (1.0, 0.0)]])  # (y=0, x=1) et (y=1, x=0)
+        v2 = VectorMap([[(1.0, 0.0), (1.0, 0.0)]])  # (y=1, x=0) et (y=1, x=0)
+
+        # Produit scalaire : (0*1 + 1*0) = 0 ; (1*1 + 0*0) = 1
+        dot = v1.dot_prod(v2)
+        assert dot.dtype == np.float32
+        np.testing.assert_allclose(dot, np.array([[0.0, 1.0]], dtype=np.float32))
+
+        # Produit vectoriel 2D (x1*y2 - y1*x2) : (1*1 - 0*0) = 1 ; (0*1 - 1*0) = 0
+        cross = v1.cross(v2)
+        assert cross.dtype == np.float32
+        np.testing.assert_allclose(cross, np.array([[1.0, 0.0]], dtype=np.float32))
+
+    # =========================================================================
+    # 5. Intégration Pydantic
+    # =========================================================================
+    def test_pydantic_validation_and_serialization(self) -> None:
+        class FlowModel(BaseModel):
+            vectors: VectorMap[Literal[2], Literal[2]]
+            points: PointMap[Literal[2], Literal[2]]
+            grid: IntPointMap[Literal[2], Literal[2]]
+
+        payload = {
+            "vectors": [[(0.5, 1.5), (2.0, 3.0)], [(4.0, 5.0), (6.0, 7.0)]],
+            "points": [[(0.5, 1.5), (2.0, 3.0)], [(4.0, 5.0), (6.0, 7.0)]],
+            "grid": [[(1, 2), (3, 4)], [(5, 6), (7, 8)]],
+        }
+
+        model = FlowModel.model_validate(payload)
+        assert isinstance(model.vectors, VectorMap) and model.vectors.dtype == np.float32
+        assert isinstance(model.points, PointMap) and model.points.dtype == np.float64
+        assert isinstance(model.grid, IntPointMap) and model.grid.dtype == np.int64
+
+        # Test serialization
+        dumped = model.model_dump()
+        assert dumped["grid"] == [[(1, 2), (3, 4)], [(5, 6), (7, 8)]]
+        assert dumped["vectors"] == [[(0.5, 1.5), (2.0, 3.0)], [(4.0, 5.0), (6.0, 7.0)]]
+
+        # Validation échoue si des floats fractionnaires sont passés à IntPointMap
+        with pytest.raises(ValidationError):
+            FlowModel.model_validate({**payload, "grid": [[(1.5, 2.0), (3, 4)], [(5, 6), (7, 8)]]})
 
 
 # =====================================================================

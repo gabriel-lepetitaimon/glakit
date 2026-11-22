@@ -20,6 +20,7 @@ from .geometry import (
     PointLikeStrict,
     Rect,
     RectLike,
+    minimal_dtype,
 )
 from .safe_import import import_cv2
 from .typing import Bool2DArray, Float1DArray, Float2DArray
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
     from pydantic_core import CoreSchema
 
 
-def _np_short_str(arr: npt.NDArray[np.floating]) -> str:
+def np_short_format(arr: npt.NDArray[np.floating]) -> str:
     if arr.ndim == 2:
         return "[" + "| ".join([" ".join(f"{v:.2f}" for v in row) for row in arr]) + "]"
     elif arr.ndim == 1:
@@ -46,17 +47,17 @@ class Transform(abc.ABC):
         Transform._REGISTRY[cls.__name__] = cls
 
     def to_dict(self) -> dict[str, Any]:
-        """Sérialise la transformation en dictionnaire compatible JSON."""
+        """Serializes this transformation into a dictionary compatible with JSON."""
         return {"type": self.__class__.__name__, **self._to_dict()}
 
     @abc.abstractmethod
     def _to_dict(self) -> dict[str, Any]:
-        """Retourne les paramètres spécifiques de la sous-classe à sérialiser."""
+        """Return the specific parameters of the subclass to be serialized."""
         raise NotImplementedError(f"{self.__class__.__name__} does not implement '_to_dict_params'")
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
-        """Reconstruit une instance à partir d'un dictionnaire."""
+        """Rebuilds an instance from a dictionary."""
         data_dict = dict(data)
         type_name = data_dict.pop("type", None)
 
@@ -76,7 +77,6 @@ class Transform(abc.ABC):
 
     @classmethod
     def _from_dict(cls, params: dict[str, Any]) -> Self:
-        """Instancie la classe concrète à partir de ses paramètres désérialisés."""
         return cls(**params)
 
     @classmethod
@@ -164,17 +164,17 @@ class Transform(abc.ABC):
 
     def compose(self, T1: Transform) -> Transform:
         """
-        Composes this projection model with another one.
+        Composes this projection model with another one (applies `self` first, then `T1`).
 
         Parameters
         ----------
         T1 : Transform
-            The other projection model to compose with.
+            The transformation to apply after `self`.
 
         Returns
         -------
         T : Transform
-            The composed projection model: T = self @ T1.
+            The composed projection model: T = T1 @ self. (i.e. T1(self(x)) for any point x).
         """
         return TransformComposition.simplify_composition(self, T1)
 
@@ -820,13 +820,15 @@ class AffineTransform(Transform):
 
     @classmethod
     def _from_dict(cls, params: dict[str, Any]) -> Self:
-        return cls(H=np.asarray(params["H"], dtype=np.float64), t=params["t"])
+        if cls is AffineTransform:
+            return cls(H=np.asarray(params["H"], dtype=np.float64), t=params["t"])
+        return cls(**params)
 
     def __repr__(self) -> str:
         return f"AffineProjection(H={self.H}, t={self.t})"
 
     def __str__(self) -> str:
-        return f"Affine(H={_np_short_str(self.H)}, t={_np_short_str(self.t.view(np.ndarray))})"
+        return f"Affine(H={np_short_format(self.H)}, t={np_short_format(self.t.view(np.ndarray))})"
 
     def __eq__(self, value: object) -> bool:
         if not isinstance(value, AffineTransform):
@@ -944,7 +946,7 @@ class AffineTransform(Transform):
     ) -> tuple[npt.NDArray[DTYPE], IntRect]:
         cv2 = import_cv2()
 
-        T = Translation(src_domain.top_left) @ self @ Translation(-dst_domain.top_left)
+        T = Translation(-dst_domain.top_left) @ self @ Translation(src_domain.top_left)
         M_xy = T.M[[1, 0]][:, [1, 0, 2]]  # OpenCV uses (x, y) coordinates while we use (y, x) coordinates
         return cv2.warpAffine(src_img, M_xy, dst_domain.sizes.xy, flags=cv2.INTER_LINEAR), dst_domain  # type: ignore
 
@@ -1058,6 +1060,10 @@ class SimilarityTransform(AffineTransform):
     def _to_dict(self) -> dict[str, Any]:
         return {"s": self.s, "r": self.r, "t": self.t.tuple}
 
+    @classmethod
+    def _from_dict(cls, params: dict[str, Any]) -> Self:
+        return cls(**params)
+
     @staticmethod
     def rotation_scale_matrix(theta: float, scale: float, deg: bool = False) -> Float2DArray:
         return scale * AffineTransform.rotation_matrix(theta, deg=deg)  # type: ignore
@@ -1091,7 +1097,7 @@ class SimilarityTransform(AffineTransform):
         return f"SimilarityTransform(s={self.s}, r={self.r}, t={self.t})"
 
     def __str__(self) -> str:
-        return f"Sim(s={self.s:.2f}, r={self.r:.2f}, t={_np_short_str(self.t.view(np.ndarray))})"
+        return f"Sim(s={self.s:.2f}, r={self.r:.2f}, t={np_short_format(self.t.view(np.ndarray))})"
 
     def is_identity(self) -> bool:
         return self.r == 0 and self.s == 1 and self.t == Point.origin()
@@ -1271,8 +1277,8 @@ class ResizeTranslation(AffineTransform):
         return f"ResizeTranslateProjection(s={self.s}, t={self.t})"
 
     def __str__(self) -> str:
-        s = f"{self.s.y}" if self.s.y == self.s.x else f"s={_np_short_str(self.s.view(np.ndarray))}"
-        return f"ResizeTranslateProjection(s={s}, t={_np_short_str(self.t.view(np.ndarray))})"
+        s = f"{self.s.y}" if self.s.y == self.s.x else f"s={np_short_format(self.s.view(np.ndarray))}"
+        return f"ResizeTranslateProjection(s={s}, t={np_short_format(self.t.view(np.ndarray))})"
 
     def invert(self) -> Self:
         return self.__class__(1 / self.s, -self.t / self.s)
@@ -1298,14 +1304,22 @@ class ResizeTranslation(AffineTransform):
     def _warp[DTYPE: np.uint8 | np.float32](
         self, src_img: npt.NDArray[DTYPE], src_domain: IntRect, dst_domain: IntRect
     ) -> tuple[npt.NDArray[DTYPE], IntRect]:
-        from .safe_import import cv2
+        # If the translation is subpixel, fall back to the default warp method
+        if np.issubdtype(minimal_dtype(self.t), np.floating):
+            return super()._warp(src_img, src_domain, dst_domain)
+
+        cv2 = import_cv2()
 
         dst_region_domain = self.transform_domain(src_domain)
+        if dst_region_domain.w <= 0 or dst_region_domain.h <= 0:
+            return np.zeros(dst_domain.to_shape() + src_img.shape[2:], dtype=src_img.dtype), dst_domain
+
         if np.issubdtype(src_img.dtype, np.integer):
             interpolation = cv2.INTER_NEAREST
         else:
-            interpolation = cv2.INTER_AREA if abs(self.s.y) < 1 else cv2.INTER_LINEAR
-        dst_region = cv2.resize(src_img, dst_domain.sizes.xy, fx=self.s.x, fy=self.s.y, interpolation=interpolation)
+            interpolation = cv2.INTER_AREA if self.s.y < 1 else cv2.INTER_LINEAR
+
+        dst_region = cv2.resize(src_img, dst_region_domain.sizes.xy, interpolation=interpolation)
         dst = dst_domain.crop_pad_image(dst_region, origin=-dst_region_domain.top_left, channel_last=True, copy=False)
         return dst, dst_domain  # type: ignore
 
@@ -1330,7 +1344,7 @@ class Translation(ResizeTranslation):
         return f"Translation(t={self.t})"
 
     def __str__(self) -> str:
-        return f"Trans(t={_np_short_str(self.t.view(np.ndarray))})"
+        return f"Trans(t={np_short_format(self.t.view(np.ndarray))})"
 
     def is_identity(self) -> bool:
         return self.t == Point.origin()
@@ -1363,5 +1377,10 @@ class Translation(ResizeTranslation):
     def _warp[DTYPE: np.uint8 | np.float32](
         self, src_img: npt.NDArray[DTYPE], src_domain: IntRect, dst_domain: IntRect
     ) -> tuple[npt.NDArray[DTYPE], IntRect]:
-        dst_img = dst_domain.crop_pad_image(src_img, origin=-src_domain.top_left, channel_last=True, copy=False)
+        # If the translation is subpixel, fall back to the default warp method
+        if np.issubdtype(minimal_dtype(self.t), np.floating):
+            return super()._warp(src_img, src_domain, dst_domain)
+
+        translated_domain = src_domain + self.t.as_int()
+        dst_img = dst_domain.crop_pad_image(src_img, origin=-translated_domain.top_left, channel_last=True, copy=False)
         return dst_img, dst_domain
