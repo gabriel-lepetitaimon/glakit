@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Iterable, Iterator, Sequence
-from typing import TYPE_CHECKING, Any, Literal, Never, Self, overload
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Never, Self, overload
 
 import numpy as np
 import numpy.typing as npt
 
-from .geometry import Point, PointArray, PointArrayLike, PointLike, _BasePointArray, _GeomOpsMixin
+from .geometry import Point, PointArray, PointArrayLike, PointLike, _BasePointArray, _GeomOpsMixin, as_point, as_points
 from .transform import Transform
 from .typing import (
     Bool1DArray,
@@ -43,8 +43,24 @@ class BezierCubic(
     _DTYPE = np.dtype(np.float64)
     _POINT_CLS = Point
 
-    def __new__(cls, p0: PointLike, c0: PointLike, c1: PointLike, p1: PointLike) -> Self:
-        return cls.as_bcubic((p0, c0, c1, p1))
+    @overload
+    def __new__(cls, bezier_cubic: BezierCubicLike, /) -> Self: ...
+    @overload
+    def __new__(cls, p0: PointLike, c0: PointLike, c1: PointLike, p1: PointLike) -> Self: ...
+    def __new__(
+        cls,
+        p0: PointLike | BezierCubicLike,
+        c0: PointLike | None = None,
+        c1: PointLike | None = None,
+        p1: PointLike | None = None,
+    ) -> Self:
+        if p1 is None:
+            return cls.as_bcubic(p0)  # type: ignore
+        if c0 is None:
+            c0 = p0  # type: ignore
+        if c1 is None:
+            c1 = p1
+        return cls.as_bcubic((p0, c0, c1, p1))  # type: ignore
 
     @classmethod
     def as_bcubic(cls, value: BezierCubicLike, copy: bool = True) -> Self:
@@ -272,32 +288,172 @@ class BezierCubic(
         p0123 = p012 + (p123 - p012) * t
         return (BezierCubic(self.p0, p01, p012, p0123), BezierCubic(p0123, p123, p23, self.p1))
 
-    def _q(self, t: Float1DArray) -> PointArray:
-        t = t[:, np.newaxis]
-        ctrlPoly = self.ndarray[:, np.newaxis, :]
-        return (
-            (1.0 - t) ** 3 * ctrlPoly[0]
-            + 3 * (1.0 - t) ** 2 * t * ctrlPoly[1]
-            + 3 * (1.0 - t) * t**2 * ctrlPoly[2]
-            + t**3 * ctrlPoly[3]
-        ).view(PointArray)
+    @overload
+    def projection(
+        self,
+        pts: PointArrayLike,
+        fast_approximation: bool = False,
+        *,
+        return_u: Literal[False] = False,
+        max_iteration: int = 20,
+        error: float = 2,
+    ) -> PointArray | tuple[PointArray, Float1DArray]: ...
+    @overload
+    def projection(
+        self,
+        pts: PointArrayLike,
+        fast_approximation: bool = False,
+        *,
+        return_u: Literal[True],
+        max_iteration: int = 20,
+        error: float = 2,
+    ) -> tuple[PointArray, Float1DArray]: ...
+    def projection(
+        self,
+        pts: PointArrayLike,
+        fast_approximation: bool = False,
+        *,
+        return_u: bool = False,
+        max_iteration: int = 20,
+        error: float = 2,
+    ) -> PointArray | tuple[PointArray, Float1DArray]:
+        """Project a set of points on the Bezier curve.
 
-    def _qPrime(self, t: Float1DArray) -> PointArray:
-        t = t[:, np.newaxis]
-        ctrlPoly = self.ndarray[:, np.newaxis, :]
-        return (
-            3 * (1.0 - t) ** 2 * (ctrlPoly[1] - ctrlPoly[0])
-            + 6 * (1.0 - t) * t * (ctrlPoly[2] - ctrlPoly[1])
-            + 3 * t**2 * (ctrlPoly[3] - ctrlPoly[2])
-        ).view(PointArray)
+        Parameters
+        ----------
+        pts : np.ndarray
+            The points to project on the Bezier curve.
 
-    def _qPrimePrime(self, t: Float1DArray) -> PointArray:
-        t = t[:, np.newaxis]
-        ctrlPoly = self.ndarray[:, np.newaxis, :]
-        return (
-            6 * (1.0 - t) * (ctrlPoly[2] - 2 * ctrlPoly[1] + ctrlPoly[0])
-            + 6 * t * (ctrlPoly[3] - 2 * ctrlPoly[2] + ctrlPoly[1])
-        ).view(PointArray)
+        fast_approximation : bool, optional
+                    If True, use a fast approximation by projecting the points on the trapezoid defined by the control points, by default False.
+
+        return_u : bool, optional
+            If True, also return the parameter u of the projected points on the Bezier curve, by default False.
+
+        max_iteration : int, optional
+            Maximum number of iterations of the Newton-Raphson algorithm, by default 20.
+            If fast_approximation is True, this parameter is ignored.
+
+        error : float, optional
+            Target error in pixel for the projection stopping preemptively the Newton-Raphson algorithm, by default 2.
+            If fast_approximation is True, this parameter is ignored.
+
+        Returns
+        -------
+        projected_points : np.ndarray
+            The projected points on the Bezier curve as a (n, 2) array.
+
+        u : np.ndarray
+            If return_u is True, also return the parameter u of the projected points on the Bezier curve as a (n,) array.
+        """
+
+        pts = as_points(pts)
+        n = pts.shape[0]
+
+        # Compute projection on the trapezoid defined by (p0, c0, c1, p1)
+        p0, c0, c1, p1 = self
+
+        if np.all(p0 == c0) and np.all(p0 == c1) and np.all(p0 == p1):
+            proj = np.full_like(pts, p0).view(PointArray)
+            return proj if not return_u else (proj, np.zeros(len(pts), dtype=np.float64))
+
+        if np.any(p0 != c0):
+            p0c0_u = ((c0 - p0) / (p0c0norm := np.linalg.norm(c0 - p0)))[None, :]
+            l_p0c0 = np.clip((pts - p0) @ p0c0_u.T, 0, p0c0norm)
+            p0c0_proj = l_p0c0 * p0c0_u + p0[None, :]
+        else:
+            p0c0_proj, l_p0c0, p0c0norm = p0[None, :], np.zeros((1, n)), 0
+        if np.any(c1 != c0):
+            c0c1_u = ((c1 - c0) / (c0c1norm := np.linalg.norm(c1 - c0)))[None, :]
+            l_c0c1 = np.clip((pts - c0) @ c0c1_u.T, 0, c0c1norm)
+            c0c1_proj = l_c0c1 * c0c1_u + c0[None, :]
+        else:
+            c0c1_proj, l_c0c1, c0c1norm = c0[None, :], np.zeros((1, n)), 0
+        if np.any(p1 != c1):
+            p1c1_u = ((p1 - c1) / (p1c1norm := np.linalg.norm(p1 - c1)))[None, :]
+            l_p1c1 = np.clip((pts - c1) @ p1c1_u.T, 0, p1c1norm)
+            p1c1_proj = l_p1c1 * p1c1_u + c1[None, :]
+        else:
+            p1c1_proj, l_p1c1, p1c1norm = c1[None, :], np.zeros((1, n)), 0
+
+        proj = np.stack([p0c0_proj, c0c1_proj, p1c1_proj], axis=0)
+        dist = np.linalg.norm(proj - pts[None, :, :], axis=2)
+        closest_segment = np.argmin(dist, axis=0)
+
+        if not fast_approximation or return_u:
+            u = np.stack([l_p0c0, l_c0c1 + p0c0norm, l_p1c1 + p0c0norm + c0c1norm], axis=0).squeeze(axis=2)
+            u = np.take_along_axis(u, closest_segment[None, :], axis=0).squeeze(axis=0)
+            u /= p0c0norm + c0c1norm + p1c1norm
+        else:
+            u = np.zeros(n, dtype=np.float64)
+
+        if fast_approximation:
+            proj = np.take_along_axis(proj, closest_segment[None, :, None], axis=0).squeeze(axis=0).view(PointArray)
+            return proj if not return_u else (proj, u)
+        else:
+            for _ in range(max_iteration):
+                u = self._closestU_newtonRaphsonStep(pts, u)
+                maxError = np.max((pts - self.evaluate(u)).sqr_norm)
+                if maxError < error**2:
+                    break
+            u = np.clip(u, 0, 1)
+
+            proj = self.evaluate(u)
+            return proj if not return_u else (proj, u)
+
+    def _q(self, u: Float1DArray) -> PointArray:
+        u = u[:, np.newaxis]
+        invU = 1.0 - u
+        p0, c0, c1, p1 = self.ndarray[:, np.newaxis, :]
+        q = invU**3 * p0 + 3 * invU**2 * u * c0 + 3 * invU * u**2 * c1 + u**3 * p1
+        return q.view(PointArray)
+
+    def _qPrime(self, u: Float1DArray) -> PointArray:
+        u = u[:, np.newaxis]
+        invU = 1.0 - u
+        p0, c0, c1, p1 = self.ndarray[:, np.newaxis, :]
+        qP = 3 * invU**2 * (c0 - p0) + 6 * invU * u * (c1 - c0) + 3 * u**2 * (p1 - c1)
+        return qP.view(PointArray)
+
+    def _qPrimePrime(self, u: Float1DArray) -> PointArray:
+        u = u[:, np.newaxis]
+        p0, c0, c1, p1 = self.ndarray[:, np.newaxis, :]
+        qPP = (6 * (1.0 - u) * (c1 - 2 * c0 + p0) + 6 * u * (p1 - 2 * c1 + c0)).view(PointArray)
+        return qPP
+
+    def _closestU_newtonRaphsonStep(self, point: PointArray, u: Float1DArray, *, inplace: bool = False) -> Float1DArray:
+        """
+        Newton's root finding algorithm calculates f(x)=0 by reiterating
+        x_n+1 = x_n - f(x_n)/f'(x_n)
+
+        We are trying to find curve parameter u for some point p that minimizes
+        the distance from that point to the curve. Distance point to curve is d=q(u)-p.
+        At minimum distance the point is perpendicular to the curve.
+        We are solving
+        f = q(u)-p * q'(u) = 0
+        with
+        f' = q'(u) * q'(u) + q(u)-p * q''(u)
+
+        gives
+        u_n+1 = u_n - |q(u_n)-p * q'(u_n)| / |q'(u_n)**2 + q(u_n)-p * q''(u_n)|
+        """
+        if not inplace:
+            u = u.copy()
+
+        t = u[:, np.newaxis]
+        invT = 1.0 - t
+        p0, c0, c1, p1 = self.ndarray[:, np.newaxis, :]
+
+        q = invT**3 * p0 + 3 * invT**2 * t * c0 + 3 * invT * t**2 * c1 + t**3 * p1
+        qP = 3 * invT**2 * (c0 - p0) + 6 * invT * t * (c1 - c0) + 3 * t**2 * (p1 - c1)
+        qPP = 6 * (1.0 - t) * (c1 - 2 * c0 + p0) + 6 * t * (p1 - 2 * c1 + c0)
+
+        d = q - point
+        num, den = (d * qP).sum(axis=1), (qP**2 + d * qPP).sum(axis=1)
+        non_null_den = den != 0.0
+
+        u[non_null_den] -= num[non_null_den] / den[non_null_den]
+        return u
 
     ############################
     ##   Pydantic integration ##
@@ -330,7 +486,9 @@ class BezierCubic(
 type BSplineLike = Iterable[BezierCubicLike] | BezierCubic | BSpline | str | npt.NDArray
 
 
-class BSpline(np.ndarray[tuple[int, 4, 2], np.dtype[np.float64]]):
+class BSpline[BCubicType: BezierCubic](np.ndarray[tuple[int, 4, 2], np.dtype[np.float64]]):
+    _BCUBIC_CLS: ClassVar[type[BezierCubic]] = BezierCubic
+
     def __new__(cls, bspline: BSplineLike = ()) -> Self:
         return cls.as_bspline(bspline, copy=False)
 
@@ -404,14 +562,14 @@ class BSpline(np.ndarray[tuple[int, 4, 2], np.dtype[np.float64]]):
     def __len__(self) -> int:
         return self.shape[0]
 
-    def __iter__(self) -> Iterator[BezierCubic]:  # type: ignore
+    def __iter__(self) -> Iterator[BCubicType]:  # type: ignore
         for i in range(len(self)):
-            yield self[i].view(BezierCubic)
+            yield self[i].view(self._BCUBIC_CLS)  # type: ignore
 
     @overload
     def __getitem__(self, key: slice | list[int]) -> Self: ...
     @overload
-    def __getitem__(self, key: int | np.integer[Any]) -> BezierCubic: ...
+    def __getitem__(self, key: int | np.integer[Any]) -> BCubicType: ...
     @overload
     def __getitem__(self, key: tuple[int | np.integer[Any], int | np.integer[Any]]) -> Point: ...
     @overload
@@ -419,11 +577,11 @@ class BSpline(np.ndarray[tuple[int, 4, 2], np.dtype[np.float64]]):
     def __getitem__(self, key: Any) -> Any:  # type: ignore
         result = super().__getitem__(key)
         if np.isscalar(key):
-            return result.view(BezierCubic)
+            return result.view(self._BCUBIC_CLS)
         elif isinstance(key, tuple) and len(key) == 2 and np.isscalar(key[0]) and np.isscalar(key[1]):
             return result.copy().view(Point)
         elif isinstance(result, np.ndarray) and result.ndim == 3 and result.shape[1:] == (4, 2):
-            return result.view(BSpline)
+            return result.view(type(self))
         return result
 
     def to_path(
@@ -462,18 +620,19 @@ class BSpline(np.ndarray[tuple[int, 4, 2], np.dtype[np.float64]]):
         return self.__class__([curve.flip() for curve in reversed(self)])
 
     def filling_curves(
-        self, start: Point | None = None, end: Point | None = None, *, smoothing: float = 0
-    ) -> list[BezierCubic]:
+        self, start: PointLike | None = None, end: PointLike | None = None, *, smoothing: float = 0
+    ) -> list[BCubicType]:
         filling = []
         if len(self) == 0:
             if start is not None and end is not None:
-                filling.append(BezierCubic(start, start, end, end))
+                filling.append(self._BCUBIC_CLS(start, start, end, end))
             return filling
 
         if start is not None:
+            start = as_point(start)
             p_start = self[0].p0
             start_c = self[0].c0_sym(-start.distance(p_start) * smoothing, relative=False) if smoothing else p_start
-            filling.append(BezierCubic(start, start, start_c, p_start))
+            filling.append(self._BCUBIC_CLS(start, start, start_c, p_start))
 
         for prev, next in itertools.pairwise(self):
             if smoothing:
@@ -482,18 +641,19 @@ class BSpline(np.ndarray[tuple[int, 4, 2], np.dtype[np.float64]]):
                 next_c = next.c0_sym(-dist * smoothing, relative=False)
             else:
                 prev_c, next_c = prev.p1, next.p0
-            filling.append(BezierCubic(prev.p1, prev_c, next_c, next.p0))
+            filling.append(self._BCUBIC_CLS(prev.p1, prev_c, next_c, next.p0))
 
         if end is not None:
+            end = as_point(end)
             p_last = self[-1].p1
             last_c = self[-1].c1_sym(-end.distance(p_last) * smoothing, relative=False) if smoothing else p_last
-            filling.append(BezierCubic(p_last, last_c, end, end))
+            filling.append(self._BCUBIC_CLS(p_last, last_c, end, end))
 
         return filling
 
-    def interpolate_bspline(
-        self, start: Point | None = None, end: Point | None = None, *, smoothing: float = 0
-    ) -> BSpline:
+    def interpolate(
+        self, start: PointLike | None = None, end: PointLike | None = None, *, smoothing: float = 0
+    ) -> Self:
         filling_curves = self.filling_curves(start, end, smoothing=smoothing)
         curves = list(self)
 
@@ -505,7 +665,7 @@ class BSpline(np.ndarray[tuple[int, 4, 2], np.dtype[np.float64]]):
             if filling is not None:
                 bsplines.append(filling)
 
-        return BSpline([b for b in bsplines if not b.is_null()])
+        return self.as_bspline([b for b in bsplines if not b.is_null()])
 
     @overload
     def evaluate(self, t: float) -> Point: ...
@@ -637,6 +797,135 @@ class BSpline(np.ndarray[tuple[int, 4, 2], np.dtype[np.float64]]):
             bspline_data[:, 1, :] = bspline_data[:, 0, :] + t0
             bspline_data[:, 2, :] = bspline_data[:, 3, :] + t1
         return bspline_data.view(type(self))
+
+    @overload
+    def projection(
+        self, points: PointArrayLike, fast_approximation: bool = False, *, return_u: Literal[False] = False
+    ) -> PointArray: ...
+    @overload
+    def projection(
+        self, points: PointArrayLike, fast_approximation: bool = False, *, return_u: Literal[True]
+    ) -> tuple[PointArray, Float1DArray]: ...
+
+    def projection(
+        self, points: PointArrayLike, fast_approximation: bool = False, *, return_u: bool = False
+    ) -> PointArray | tuple[PointArray, Float1DArray]:
+        """Project a set of points on the Bezier curve.
+
+        Parameters
+        ----------
+        yx_points : PointArray
+            The points to project on the Bezier curve.
+        fast_approximation : bool, optional
+            If True, use a fast approximation by projecting the points on the trapezoid defined by the control points, by default False.
+        return_u : bool, optional
+            If True, also return the parameter u of the projected points on the Bezier curve, by default False
+
+        Returns
+        -------
+        projected_points : PointArray
+            The projected points on the Bezier curve as a (n, 2) array.
+
+        u : np.ndarray
+            If return_u is True, also return the parameter u of the projected points on the Bezier curve as a (n,) array. ``floor(u)`` is the index of the Bezier curve in the BSpline, and ``u - floor(u)`` is the relative position on the Bezier curve.
+
+        """
+        points = as_points(points)
+        n_split = points.shape[0]
+
+        if len(self) == 0:
+            proj = np.full((n_split, 2), np.nan, dtype=np.float64).view(PointArray)
+            return proj if not return_u else (proj, np.full(n_split, np.nan, dtype=np.float64))
+
+        # === Find the closest bezier curve for each split point ===
+        projs, u = zip(
+            *[bezier.projection(points, return_u=True, fast_approximation=fast_approximation) for bezier in self],
+            strict=True,
+        )
+        if len(self) == 1:
+            proj = projs[0]
+            return proj if not return_u else (proj, u[0])
+        else:
+            dists = [(projs[i] - points).sqr_norm for i in range(len(self))]
+            closest_bezier = np.argmin(dists, axis=0)
+            proj = (
+                np.take_along_axis(np.array(projs), closest_bezier[None, :, None], axis=0)
+                .squeeze(axis=0)
+                .view(PointArray)
+            )
+            if return_u:
+                u = np.take_along_axis(np.array(u), closest_bezier[None, :], axis=0).squeeze(axis=0)
+                u += closest_bezier
+                return proj, u
+            else:
+                return proj
+
+    def split_into_multiple_bsplines(
+        self, split_coord: PointArrayLike | None = None, u: Float1DArrayLike | None = None
+    ) -> list[BSpline]:
+        if u is None:
+            if split_coord is None:
+                raise ValueError("Either split_coord or u must be provided")
+            else:
+                _, u = self.projection(split_coord, return_u=True, fast_approximation=False)
+        else:
+            u = as_float_1d(u)
+
+        closest_bezier = np.floor(u).astype(int)
+        u = u - closest_bezier
+        previous_end = (u == 0) & (closest_bezier > 0)
+        closest_bezier[previous_end] -= 1
+        u[previous_end] = 1
+
+        # === Split the closest bezier curve at the closest point ===
+        beziers = [[]]
+        for i, bezier in enumerate(self):
+            if i not in closest_bezier:
+                beziers[-1].append(bezier)
+                continue
+
+            # Select the split points and their parameter u for the current bezier curve
+            # split_points, split_u = split_coord[closest_bezier == i], u[closest_bezier == i]
+            split_u = u[closest_bezier == i]
+
+            # Remove points that are at the extremities of the bezier curve
+            p0_points, p1_points = np.isclose(split_u, 0), np.isclose(split_u, 1)
+            not_extremities = ~(p0_points | p1_points)
+            # split_points, split_u = split_points[not_extremities], split_u[not_extremities]
+            split_u = split_u[not_extremities]
+
+            # Refine the parameter u and remove any additional extremities
+            # split_u = np.clip(np.sort(bezier.parametrize(split_points, initial_u=split_u)), 0, 1)
+            # p0_points, p1_points = np.isclose(split_u, 0), np.isclose(split_u, 1)
+            # not_extremities = ~(p0_points | p1_points)
+            # split_points, split_u = split_points[not_extremities], split_u[not_extremities]
+
+            # Create empty segment for any points before the bezier curve
+            for _ in range(np.count_nonzero(p0_points)):
+                beziers.append([])
+
+            # Split the bezier curve at the split points
+            if len(split_u):
+                acc_t = 0
+                for t in split_u:
+                    b0, bezier = bezier.split((t - acc_t) / (1 - acc_t))
+                    acc_t += t
+                    # Append the beginning of the bezier curve (before the split) to the current segment ...
+                    beziers[-1].append(b0)
+                    # ... and start a new segment
+                    beziers.append([])
+
+            # Append the remaining bezier curve to the current segment
+            beziers[-1].append(bezier)
+
+            # Create empty segment for any points after the bezier curve
+            for _ in range(np.count_nonzero(p1_points)):
+                beziers.append([])
+
+        return [BSpline(_) for _ in beziers]
+
+    def split(self, split_coord: PointArrayLike | None = None, u: Float1DArrayLike | None = None) -> BSpline:
+        return BSpline(itertools.chain(*self.split_into_multiple_bsplines(split_coord, u)))
 
     ############################
     ##   Pydantic integration ##

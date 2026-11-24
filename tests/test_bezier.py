@@ -131,6 +131,37 @@ class TestBezierCubic:
         assert np.all(spline[0] == c1)
         assert np.all(spline[1] == c2)
 
+    def test_projection(self):
+        # Segment horizontal (y=0, x de 0 à 10)
+        line = BezierCubic((0, 0), (0, 10 / 3), (0, 20 / 3), (0, 10))
+        query = PointArray([(4.0, 2.5), (-3.0, 7.5), (1.0, -2.0), (1.0, 12.0)])
+
+        proj_fast, u_fast = line.projection(query, fast_approximation=True, return_u=True)
+        assert isinstance(proj_fast, PointArray)
+        assert proj_fast.shape == (4, 2)
+        np.testing.assert_allclose(proj_fast, [[0.0, 2.5], [0.0, 7.5], [0.0, 0.0], [0.0, 10.0]])
+        np.testing.assert_allclose(u_fast, [0.25, 0.75, 0.0, 1.0])
+
+        # Mode exact (Newton-Raphson) sans return_u
+        proj_exact = line.projection(query, fast_approximation=False, return_u=False)
+        assert isinstance(proj_exact, PointArray)
+        np.testing.assert_allclose(proj_exact, [[0.0, 2.5], [0.0, 7.5], [0.0, 0.0], [0.0, 10.0]], atol=1e-4)
+
+        # Courbe dégénérée (tous les points de contrôle confondus)
+        null_c = BezierCubic((3, 4), (3, 4), (3, 4), (3, 4))
+        proj_null, u_null = null_c.projection(PointArray([(0, 0), (10, 10)]), return_u=True)
+        np.testing.assert_allclose(proj_null, [[3.0, 4.0], [3.0, 4.0]])
+        np.testing.assert_allclose(u_null, [0.0, 0.0])
+
+        # Cas d'une BSpline vide
+        empty = BSpline([])
+        proj_empty, u_empty = empty.projection(PointArray([(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]), return_u=True)
+        assert isinstance(proj_empty, PointArray)
+        assert proj_empty.shape == (3, 2)
+        assert np.all(np.isnan(proj_empty))
+        assert u_empty.shape == (3,)
+        assert np.all(np.isnan(u_empty))
+
 
 class TestBSpline:
     @pytest.fixture
@@ -234,6 +265,65 @@ class TestBSpline:
 
         svg = sample_spline.to_path()
         np.testing.assert_array_equal(BSpline(svg), sample_spline)
+
+    def test_projection(self, sample_spline: BSpline):
+        # sample_spline : c1 de (0, 0) -> (0, 10), c2 de (0, 10) -> (10, 10)
+        queries = PointArray(
+            [
+                (2.0, 3.0),  # proche de c1 à u = 0.3
+                (4.0, 12.0),  # proche de c2 à u = 1.4
+                (-1.0, -2.0),  # avant le début -> u = 0.0
+                (12.0, 11.0),  # après la fin -> u = 2.0
+            ]
+        )
+
+        proj, u = sample_spline.projection(queries, return_u=True)
+        assert isinstance(proj, PointArray)
+        assert proj.shape == (4, 2)
+        np.testing.assert_allclose(proj, [[0.0, 3.0], [4.0, 10.0], [0.0, 0.0], [10.0, 10.0]], atol=1e-3)
+        np.testing.assert_allclose(u, [0.3, 1.4, 0.0, 2.0], atol=1e-3)
+
+        # Vérifie return_u=False et fast_approximation=True
+        proj_only = sample_spline.projection(queries, fast_approximation=True, return_u=False)
+        assert isinstance(proj_only, PointArray)
+        np.testing.assert_allclose(proj_only, [[0.0, 3.0], [4.0, 10.0], [0.0, 0.0], [10.0, 10.0]], atol=1e-3)
+
+        # Cas d'une BSpline à une seule courbe
+        single = BSpline([sample_spline[0]])
+        proj_single, u_single = single.projection(PointArray([(2.0, 6.0)]), return_u=True)
+        np.testing.assert_allclose(proj_single, [[0.0, 6.0]], atol=1e-3)
+        np.testing.assert_allclose(u_single, [0.6], atol=1e-3)
+
+    def test_split_and_split_into_multiple_bsplines(self, sample_spline: BSpline):
+        # 1. Découpe en plusieurs BSplines par paramètre u (milieu de c1 et milieu de c2)
+        parts = sample_spline.split_into_multiple_bsplines(u=np.array([0.5, 1.5]))
+        assert len(parts) == 3
+        assert all(isinstance(p, BSpline) for p in parts)
+
+        assert len(parts[0]) == 1 and parts[0][0].p0 == Point(0.0, 0.0) and parts[0][0].p1 == Point(0.0, 5.0)
+        assert len(parts[1]) == 2
+        assert parts[1][0].p0 == Point(0.0, 5.0) and parts[1][0].p1 == Point(0.0, 10.0)
+        assert parts[1][1].p0 == Point(0.0, 10.0) and parts[1][1].p1 == Point(5.0, 10.0)
+        assert len(parts[2]) == 1 and parts[2][0].p0 == Point(5.0, 10.0) and parts[2][0].p1 == Point(10.0, 10.0)
+
+        # 2. Découpe par coordonnées spatiales (split_coord) et fusion via split()
+        split_pts = PointArray([(2.0, 5.0), (5.0, 13.0)])
+        split_bspline = sample_spline.split(split_coord=split_pts)
+        assert isinstance(split_bspline, BSpline)
+        assert len(split_bspline) == 4
+        assert split_bspline[0].p1 == split_bspline[1].p0 == Point(0.0, 5.0)
+        assert split_bspline[2].p1 == split_bspline[3].p0 == Point(5.0, 10.0)
+        assert split_bspline.arc_length() == pytest.approx(sample_spline.arc_length(), rel=1e-2)
+
+        # 3. Découpe à la jonction exacte entre c1 et c2 (u = 1.0)
+        parts_junction = sample_spline.split_into_multiple_bsplines(u=np.array([1.0]))
+        assert len(parts_junction) == 2
+        assert len(parts_junction[0]) == 1 and parts_junction[0][0].p1 == Point(0.0, 10.0)
+        assert len(parts_junction[1]) == 1 and parts_junction[1][0].p0 == Point(0.0, 10.0)
+
+        # 4. Erreur si ni split_coord ni u n'est fourni
+        with pytest.raises(ValueError):
+            sample_spline.split_into_multiple_bsplines()
 
 
 class TestBezierPydanticIntegration:

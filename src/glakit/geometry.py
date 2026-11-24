@@ -204,27 +204,48 @@ if TYPE_CHECKING:
         def __pos__(self) -> Self: ...
         def __abs__(self) -> Self: ...
 
-    class _PointIndexMixin[CoordT, SliceArrT]:
-        """Static typing mixin for Point and IntPoint indexing.
-        CoordT: The type of the coordinate values (e.g., float, int, etc.).
-        SliceArrT: The type of the array returned when slicing (e.g., Float1DArray, Int1DArray, etc.).
-        """
+    class _PointIndexMixin[CoordT, SliceArrT, PointArr1T, Arr2DT]:
+        """Static typing mixin for Point and IntPoint indexing."""
 
         @overload
         def __getitem__(self, key: int | np.integer[Any]) -> CoordT: ...
         @overload
         def __getitem__(self, key: slice | Bool1DArray | Int1DArray) -> SliceArrT: ...
+        @overload
+        def __getitem__(self, key: None | tuple[None, slice | EllipsisType]) -> PointArr1T: ...
+        @overload
+        def __getitem__(
+            self,
+            key: tuple[None, int | np.integer[Any]] | tuple[slice | EllipsisType | int | np.integer[Any], None],
+        ) -> Arr2DT: ...
         def __getitem__(self, key: Any) -> Any: ...
 
-    class _PointArrayMixin[PointT, SelfT, PointLikeT, ArrayLikeT, CoordT, ColArrT, MatArrT]:
+    class _PointArrayMixin[PointT, SelfT, PointLikeT, ArrayLikeT, CoordT, ColArrT, MatArrT, PointMap]:
         """Static typing mixin for PointArray and IntPointArray indexing and iteration."""
 
         @overload
         def __getitem__(self, key: int | np.integer[Any]) -> PointT: ...
         @overload
         def __getitem__(
-            self, key: slice | Bool1DArray | Int1DArray | Sequence[int] | EllipsisType | tuple[EllipsisType, slice]
+            self,
+            key: slice
+            | Bool1DArray
+            | Int1DArray
+            | list[int]
+            | EllipsisType
+            | tuple[slice | Bool1DArray | Int1DArray | EllipsisType, slice | EllipsisType]
+            | tuple[None, int]
+            | tuple[int, None],
         ) -> SelfT: ...
+        @overload
+        def __getitem__(
+            self,
+            key: None
+            | tuple[None, slice | Bool1DArray | Int1DArray | list[int] | EllipsisType]
+            | tuple[None, slice | Bool1DArray | Int1DArray | list[int], slice]
+            | tuple[slice | Bool1DArray | Int1DArray | list[int], None]
+            | tuple[slice | Bool1DArray | Int1DArray | list[int], None, slice],
+        ) -> PointMap: ...
         @overload
         def __getitem__(self, key: tuple[int | np.integer[Any], int | np.integer[Any]]) -> CoordT: ...
         @overload
@@ -233,8 +254,6 @@ if TYPE_CHECKING:
             key: tuple[slice | Bool1DArray | Int1DArray | EllipsisType, int | np.integer[Any]]
             | tuple[int | np.integer[Any], slice | EllipsisType],
         ) -> ColArrT: ...
-        @overload
-        def __getitem__(self, key: tuple[slice | Bool1DArray | Int1DArray, slice | EllipsisType]) -> MatArrT: ...
         def __getitem__(self, key: Any) -> Any: ...
 
         @overload
@@ -265,7 +284,7 @@ if TYPE_CHECKING:
         def __getitem__(self, key: int | np.integer[Any]) -> RowArrayT: ...
         @overload
         def __getitem__(
-            self, key: slice | Bool1DArray | Int1DArray | Sequence[int] | EllipsisType | tuple[EllipsisType, slice]
+            self, key: slice | Bool1DArray | Int1DArray | list[int] | EllipsisType | tuple[EllipsisType, slice]
         ) -> SelfT: ...
         @overload
         def __getitem__(self, key: tuple[int | np.integer[Any], int | np.integer[Any]]) -> PointT: ...
@@ -354,28 +373,32 @@ if TYPE_CHECKING:
 
 else:
 
-    class _GeomOpsMixin[SelfT, FloatSelfT, IntRectT, FloatRectT, IntArrayT, FloatArrayT, IntOtherT, FloatOtherT]:
+    class _NoOpTypingMixin:
+        def __class_getitem__(cls, params: Any) -> type[Self]:
+            return cls
+
+    class _GeomOpsMixin(_NoOpTypingMixin):
         pass
 
-    class _FloatOpsMixin[OtherT]:
+    class _FloatOpsMixin(_NoOpTypingMixin):
         pass
 
-    class _IntOpsMixin[IntOtherT, FloatOtherT, FloatSelfT]:
+    class _IntOpsMixin(_NoOpTypingMixin):
         pass
 
-    class _PointIndexMixin[CoordT, SliceArrT]:
+    class _PointIndexMixin(_NoOpTypingMixin):
         pass
 
-    class _PointArrayMixin[PointT, SelfT, PointLikeT, ArrayLikeT, CoordT, ColArrT, MatArrT]:
+    class _PointArrayMixin(_NoOpTypingMixin):
         pass
 
-    class _PointMapMixin[PointT, RowArrayT, SelfT, PointLikeT, ArrayLikeT, MapLikeT, CoordT, Field2DArrT]:
+    class _PointMapMixin(_NoOpTypingMixin):
         pass
 
-    class _RectIndexMixin[PointT, CoordT]:
+    class _RectIndexMixin(_NoOpTypingMixin):
         pass
 
-    class _RectSetOpsMixin[IntOtherT, FloatOtherT, FloatSelfT]:
+    class _RectSetOpsMixin(_NoOpTypingMixin):
         pass
 
 
@@ -466,7 +489,7 @@ def minimal_dtype(obj: Any, min_dtype: np.dtype[Any] | None = None) -> np.dtype[
 #    === POINTS: _BasePoint, Point, IntPoint) ===
 #######################################################
 
-type _PointInputs = "FloatPairTuple | FloatPair | IntPairTuple | IntPair | str | npt.NDArray | float"
+type _PointInputs = "FloatPairTuple | FloatPair | IntPairTuple | IntPair | str | npt.NDArray"
 
 
 class _BasePoint[DTypeT: np.floating[Any] | np.integer[Any], ItemT: float | int](
@@ -485,6 +508,10 @@ class _BasePoint[DTypeT: np.floating[Any] | np.integer[Any], ItemT: float | int]
     def origin(cls) -> Self:
         raise NotImplementedError
 
+    @overload
+    def __new__(cls, y: _PointInputs | Self, /) -> Self: ...
+    @overload
+    def __new__(cls, y: float, x: float, /) -> Self: ...
     def __new__(cls, y: _PointInputs | Self | float, x: float | None = None) -> Self:
         if x is None:
             return cls.as_point(y, copy=True)
@@ -516,8 +543,6 @@ class _BasePoint[DTypeT: np.floating[Any] | np.integer[Any], ItemT: float | int]
             arr = s.astype(cls._DTYPE, copy=True)
             arr.flags.writeable = False
             return arr.view(cls)
-        elif np.isscalar(s) and not isinstance(s, str):
-            y = x = cls._as_item(s)
         else:
             raise TypeError(f"Invalid 2d point: {s}")
         arr = np.array([y, x], dtype=cls._DTYPE)
@@ -531,7 +556,8 @@ class _BasePoint[DTypeT: np.floating[Any] | np.integer[Any], ItemT: float | int]
     @classmethod
     def _wrap_as_point(cls, arr: np.ndarray) -> Self:
         pt = arr.astype(cls._DTYPE, copy=False)
-        pt.flags.writeable = False
+        if pt is not arr:
+            pt.flags.writeable = False
         return pt.view(cls)
 
     @classmethod
@@ -580,6 +606,10 @@ class _BasePoint[DTypeT: np.floating[Any] | np.integer[Any], ItemT: float | int]
         def __getitem__(self, key):
             result = super().__getitem__(key)
             if isinstance(result, _BasePoint) and result.shape != (2,):
+                if result.ndim == 2 and result.shape[1] == 2:
+                    arr_cls = _BasePointArray.by_dtype(self._DTYPE)
+                    # Copy to ensure immutability and correct view type for PointArray
+                    return result.view(np.ndarray).copy().view(arr_cls)
                 return result.view(np.ndarray)
             return result
 
@@ -605,14 +635,31 @@ class _BasePoint[DTypeT: np.floating[Any] | np.integer[Any], ItemT: float | int]
         return IntPoint(round(float(arr[0])), round(float(arr[1])))
 
     def ceil(self) -> IntPoint:
-        return IntPoint(math.ceil(self[0]), math.ceil(self[1]))
+        if isinstance(self, IntPoint):
+            return self
+        arr = np.ceil(self.view(np.ndarray))
+        return IntPoint._wrap_as_point(arr)
 
     def floor(self) -> IntPoint:
-        return IntPoint(math.floor(self[0]), math.floor(self[1]))
+        if isinstance(self, IntPoint):
+            return self
+        arr = np.floor(self.view(np.ndarray))
+        return IntPoint._wrap_as_point(arr)
+
+    @overload
+    def round(self, decimals: Literal[0] = 0, out: None = None) -> IntPoint: ...
+    @overload
+    def round(self, decimals: int, out: None = None) -> Self: ...
+    def round(self, decimals: int = 0, out: Any = None) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+        if out is not None:
+            raise TypeError("Point objects are immutable and do not support 'out'")
+        if np.issubdtype(self.dtype, np.integer):
+            return self
+        arr = self.view(np.ndarray).round(decimals=decimals)
+        return IntPoint._wrap_as_point(arr) if decimals <= 0 else self._wrap_as_point(arr)
 
     def as_float(self) -> Point:
-        arr = self.view(np.ndarray)
-        return Point(float(arr[0]), float(arr[1]))
+        return Point._wrap_as_point(self)
 
     @property
     def y(self) -> ItemT:
@@ -726,12 +773,20 @@ class Point(
         "PointLike | float",
         "PointLike | float",
     ],
-    _PointIndexMixin[float, Float1DArray],
+    _PointIndexMixin[float, Float1DArray, "PointArray[Literal[1]]", FloatPairArray],
     _BasePoint[np.float64, float],
 ):
     """Immutable 2D floating-point Point (y, x)."""
 
     _DTYPE = np.dtype(np.float64)
+
+    if TYPE_CHECKING:
+
+        @overload
+        def __new__(cls, y: PointLike) -> Point: ...
+        @overload
+        def __new__(cls, y: float, x: float) -> Point: ...
+        def __new__(cls, y: Any, x: Any = None) -> Point: ...
 
     @classmethod
     def _ITEM_TYPE(cls) -> type[float]:
@@ -786,15 +841,23 @@ class IntPoint(
         "Rect",
         "IntPointArray[Any]",
         "PointArray[Any]",
-        "IntPointLike | int",
+        "IntPointLikeStrict | int",
         "PointLike | float",
     ],
-    _PointIndexMixin[int, Int1DArray],
+    _PointIndexMixin[int, Int1DArray, "IntPointArray[Literal[1]]", IntPairArray],
     _BasePoint[np.int64, int],
 ):
     """Immutable 2D integer Point (y, x)."""
 
     _DTYPE = np.dtype(np.int64)
+
+    if TYPE_CHECKING:
+
+        @overload
+        def __new__(cls, y: IntPointLike) -> IntPoint: ...
+        @overload
+        def __new__(cls, y: int | np.integer[Any], x: int | np.integer[Any]) -> IntPoint: ...
+        def __new__(cls, y: Any, x: Any = None) -> IntPoint: ...
 
     @classmethod
     def _ITEM_TYPE(cls) -> type[int]:
@@ -844,6 +907,10 @@ class _BasePointArray[
 
     def __new__(cls, points: Any, copy: bool = True) -> Self:
         return cls.as_array(points, copy=copy)
+
+    @classmethod
+    def empty(cls) -> Self:
+        return np.empty((0, 2), dtype=cls._DTYPE).view(cls)
 
     @classmethod
     def by_dtype(cls, dtype: npt.DTypeLike) -> type[_BasePointArray[Any, Any, Any]]:
@@ -938,8 +1005,12 @@ class _BasePointArray[
             result = super().__getitem__(key)
             if isinstance(result, np.ndarray) and result.shape == (2,) and not isinstance(key, tuple):
                 return self._POINT_CLS._wrap_as_point(result.copy())
-            if isinstance(result, _BasePointArray) and (result.ndim != 2 or result.shape[1] != 2):
-                return result.view(np.ndarray)
+            if isinstance(result, _BasePointArray):
+                if result.ndim == 3 and result.shape[2] == 2:
+                    map_cls = _BasePointMap.by_dtype(self._DTYPE)
+                    return result.view(map_cls)
+                if result.ndim != 2 or result.shape[1] != 2:
+                    return result.view(np.ndarray)
             return result
 
         def __setitem__(self, key, value):
@@ -960,6 +1031,13 @@ class _BasePointArray[
         def mean(  # pyright: ignore[reportIncompatibleMethodOverride]
             self, axis: Any = None, dtype: Any = None, out: Any = None, keepdims: bool = False, *, where: Any = ...
         ) -> Any: ...
+
+    @property
+    def T(self) -> np.ndarray[tuple[Literal[2], N], np.dtype[DTypeT]]:  # type: ignore[override]
+        return self.view(np.ndarray).T
+
+    def transpose(self, *axes: Any) -> np.ndarray[Any, np.dtype[DTypeT]]:  # type: ignore[override]
+        return self.view(np.ndarray).transpose(*axes)
 
     @property
     def y(self) -> np.ndarray[tuple[N], np.dtype[DTypeT]]:
@@ -1018,10 +1096,45 @@ class _BasePointArray[
         arr[nonzero_mask] /= n[nonzero_mask][:, np.newaxis]
         return arr.view(PointArray)
 
+    @overload
+    def round(self, decimals: Literal[0] = 0, out: None = None) -> IntPointArray[N]: ...
+    @overload
+    def round(self, decimals: int, out: None = None) -> Self: ...
+    @overload
+    def round[T: npt.NDArray[Any]](self, decimals: int = 0, *, out: T) -> T: ...
+    @overload
+    def round[T: npt.NDArray[Any]](self, decimals: int, out: T) -> T: ...
+    def round(self, decimals: int = 0, out: Any = None) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+        if out is not None:
+            out_arr = out.view(np.ndarray) if isinstance(out, np.ndarray) else out
+            np.round(self.view(np.ndarray), decimals=decimals, out=out_arr)
+            return out
+        if np.issubdtype(self._DTYPE.type, np.integer):
+            return self.copy().view(IntPointArray)
+        r = np.round(self.view(np.ndarray), decimals=decimals)
+        if decimals <= 0:
+            return r.astype(np.int64).view(IntPointArray)
+        return r.astype(self._DTYPE).view(type(self))
+
+    def ceil(self) -> IntPointArray[N]:
+        if np.issubdtype(self._DTYPE.type, np.integer):
+            return self.copy().view(IntPointArray)
+        return np.ceil(self.view(np.ndarray)).astype(np.int64).view(IntPointArray)
+
+    def floor(self) -> IntPointArray[N]:
+        if np.issubdtype(self._DTYPE.type, np.integer):
+            return self.copy().view(IntPointArray)
+        return np.floor(self.view(np.ndarray)).astype(np.int64).view(IntPointArray)
+
     def as_int(self) -> _BasePointArray[N, np.int64, IntPoint]:
-        return np.rint(self.view(np.ndarray)).astype(np.int64).view(IntPointArray)
+        if np.issubdtype(self._DTYPE.type, np.floating):
+            return np.rint(self.view(np.ndarray)).astype(np.int64).view(IntPointArray)
+        else:
+            return self.view(IntPointArray)
 
     def as_float(self) -> _BasePointArray[N, np.float64, Point]:
+        if np.issubdtype(self._DTYPE.type, np.integer):
+            return self.view(np.ndarray).astype(np.float64, copy=True).view(PointArray)
         return self.view(np.ndarray).astype(np.float64, copy=True).view(PointArray)
 
     ##############################
@@ -1063,7 +1176,16 @@ class PointArray[N: int](
         "PointArrayLike | float",
         "PointArrayLike | float",
     ],
-    _PointArrayMixin[Point, "PointArray[N]", "PointLike", "PointArrayLike", float, Float1DArray, FloatPairArray],
+    _PointArrayMixin[
+        Point,
+        "PointArray[N]",
+        "PointLike",
+        "PointArrayLike",
+        float,
+        Float1DArray,
+        FloatPairArray,
+        "PointMap[Any, Any]",
+    ],
     _BasePointArray[N, np.float64, Point],
 ):
     """Mutable 2D floating-point array of shape (N, 2)."""
@@ -1080,10 +1202,19 @@ class IntPointArray[N: int](
         Never,
         "IntPointArray[N]",
         "PointArray[N]",
-        "IntPointArrayLike | IntPointLike | int",
+        "IntPointArrayLikeStrict | IntPointLikeStrict | int",
         "PointArrayLike | float",
     ],
-    _PointArrayMixin[IntPoint, "IntPointArray[N]", "IntPointLike", "IntPointArrayLike", int, Int1DArray, IntPairArray],
+    _PointArrayMixin[
+        IntPoint,
+        "IntPointArray[N]",
+        "IntPointLike",
+        "IntPointArrayLike",
+        int,
+        Int1DArray,
+        IntPairArray,
+        "IntPointMap[Any, Any]",
+    ],
     _BasePointArray[N, np.int64, IntPoint],
 ):
     """Mutable 2D integer array of shape (N, 2)."""
@@ -1246,6 +1377,13 @@ class _BasePointMap[
             self.view(np.ndarray)[key] = value
 
     @property
+    def T(self) -> np.ndarray[tuple[Literal[2], W, H], np.dtype[DTypeT]]:  # type: ignore[override]
+        return self.view(np.ndarray).T
+
+    def transpose(self, *axes: Any) -> np.ndarray[Any, np.dtype[DTypeT]]:  # type: ignore[override]
+        return self.view(np.ndarray).transpose(*axes)
+
+    @property
     def y(self) -> np.ndarray[tuple[H, W], np.dtype[DTypeT]]:
         return self.view(np.ndarray)[..., 0]
 
@@ -1277,6 +1415,36 @@ class _BasePointMap[
         arr = self.view(np.ndarray).astype(np.float64, copy=True)
         arr[nonzero_mask] /= n[nonzero_mask][..., np.newaxis]
         return arr.view(PointMap)
+
+    @overload
+    def round(self, decimals: Literal[0] = 0, out: None = None) -> IntPointMap[H, W]: ...
+    @overload
+    def round(self, decimals: int, out: None = None) -> Self: ...
+    @overload
+    def round[T: npt.NDArray[Any]](self, decimals: int = 0, *, out: T) -> T: ...
+    @overload
+    def round[T: npt.NDArray[Any]](self, decimals: int, out: T) -> T: ...
+    def round(self, decimals: int = 0, out: Any = None) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+        if out is not None:
+            out_arr = out.view(np.ndarray) if isinstance(out, np.ndarray) else out
+            np.round(self.view(np.ndarray), decimals=decimals, out=out_arr)
+            return out
+        if np.issubdtype(self._DTYPE.type, np.integer):
+            return self.copy().view(IntPointMap)
+        r = np.round(self.view(np.ndarray), decimals=decimals)
+        if decimals <= 0:
+            return r.astype(np.int64).view(IntPointMap)
+        return r.astype(self._DTYPE).view(type(self))
+
+    def ceil(self) -> IntPointMap[H, W]:
+        if np.issubdtype(self._DTYPE.type, np.integer):
+            return self.copy().view(IntPointMap)
+        return np.ceil(self.view(np.ndarray)).astype(np.int64).view(IntPointMap)
+
+    def floor(self) -> IntPointMap[H, W]:
+        if np.issubdtype(self._DTYPE.type, np.integer):
+            return self.copy().view(IntPointMap)
+        return np.floor(self.view(np.ndarray)).astype(np.int64).view(IntPointMap)
 
     def as_array(self) -> ArrayPointT:
         return self.view(np.ndarray).reshape(-1, 2).view(self._ARRAY_CLS)  # type: ignore
@@ -1326,8 +1494,8 @@ class PointMap[H: int, W: int](
         "PointMap[H, W]",
         Never,
         Never,
-        "PointMap[H, W]",
-        "PointMap[H, W]",
+        "PointMap[Any, Any]",
+        "PointMap[Any, Any]",
         "PointMapLike | PointArrayLike | float",
         "PointMapLike | PointArrayLike | float",
     ],
@@ -1359,9 +1527,9 @@ class IntPointMap[H: int, W: int](
         "PointMap[H, W]",
         Never,
         Never,
-        "IntPointMap[H, W]",
-        "PointMap[H, W]",
-        "IntPointMapLike | IntPointArrayLike | IntPointLike | int",
+        "IntPointMap[Any, Any]",
+        "PointMap[Any, Any]",
+        "IntPointMapLikeStrict | IntPointArrayLikeStrict | IntPointLikeStrict | int",
         "PointMapLike | PointArrayLike | float",
     ],
     _PointMapMixin[
@@ -1420,8 +1588,8 @@ class VectorMap[H: int, W: int](
         "PointMap[H, W]",
         Never,
         Never,
-        "VectorMap[H, W]",
-        "PointMap[H, W]",
+        "VectorMap[Any, Any]",
+        "PointMap[Any, Any]",
         "VectorMap[Any, Any] | npt.NDArray[np.float32] | _Float32LiteralLike",
         "PointMapLike | PointArrayLike | PointLike",
     ],
@@ -1510,8 +1678,14 @@ class _BaseRect[
 
     @classmethod
     @functools.cache
-    def empty(cls) -> Self:
+    def EMPTY(cls) -> Self:
         raise NotImplementedError
+
+    @classmethod
+    def _wrap_as_rect(cls, arr: np.ndarray[Any, Any]) -> Self:
+        rc = arr.astype(cls._DTYPE, copy=False)
+        rc.flags.writeable = False
+        return rc.view(cls)
 
     @classmethod
     def as_rect(cls, s: RectLike | PointLike, *, copy: bool = False) -> Self:
@@ -1555,9 +1729,7 @@ class _BaseRect[
         p1_ = p1.view(np.ndarray)
         y0, x0 = as_item(p0_[0]), as_item(p0_[1])
         y1, x1 = as_item(p1_[0]), as_item(p1_[1])
-        arr = np.array([[y0, x0], [y1, x1]], dtype=cls._DTYPE)
-        arr.flags.writeable = False
-        return arr.view(cls)
+        return cls._wrap_as_rect(np.array([[y0, x0], [y1, x1]], dtype=cls._DTYPE))
 
     @staticmethod
     def _flatten_rects(*rects: Iterable[RectLike] | RectLike) -> list[_BaseRect]:
@@ -1577,10 +1749,7 @@ class _BaseRect[
     def _wrap_ufunc_result(cls, res: Any) -> Any:
         wrapped = super()._wrap_ufunc_result(res)
         if isinstance(wrapped, _BasePointArray) and len(wrapped) == 2:
-            target_cls = cls.by_dtype(wrapped._DTYPE)
-            out = wrapped.view(target_cls)
-            out.flags.writeable = False
-            return out
+            return cls.by_dtype(wrapped._DTYPE)._wrap_as_rect(wrapped.view(np.ndarray))
         return wrapped
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
@@ -1667,7 +1836,7 @@ class _BaseRect[
     def bounding_box(cls, points: Any) -> Self:
         pts = cls._ARRAY_CLS.as_array(points, copy=False).view(np.ndarray)
         if len(pts) == 0:
-            return cls.empty()
+            return cls.EMPTY()
         min_y, min_x = pts.min(axis=0)
         max_y, max_x = pts.max(axis=0)
         as_item = cls._POINT_CLS._as_item
@@ -1680,7 +1849,7 @@ class _BaseRect[
     def union(cls, *rects: Iterable[RectLike] | RectLike) -> _BaseRect:
         rects_ = [r for r in cls._flatten_rects(*rects) if not r.is_empty()]
         if len(rects_) == 0:
-            return cls.empty()
+            return cls.EMPTY()
         if len(rects_) == 1:
             return rects_[0]
         # Promote to Rect if any input is float-based or if called explicitly on Rect
@@ -1691,7 +1860,7 @@ class _BaseRect[
     def intersection(cls, *rects: Iterable[RectLike] | RectLike) -> _BaseRect:
         rects_ = cls._flatten_rects(*rects)
         if len(rects_) == 0 or any(r.is_empty() for r in rects_):
-            return cls.empty()
+            return cls.EMPTY()
         if len(rects_) == 1:
             return rects_[0]
         target_cls = Rect if (cls is Rect or any(isinstance(r, Rect) for r in rects_)) else IntRect
@@ -1699,7 +1868,7 @@ class _BaseRect[
         inter_top_left = np.max(points[:, 0, :], axis=0)
         inter_bottom_right = np.min(points[:, 1, :], axis=0)
         if np.any(inter_top_left > inter_bottom_right):
-            return target_cls.empty()
+            return target_cls.EMPTY()
         return target_cls._from_points(
             target_cls._POINT_CLS.as_point(inter_top_left),
             target_cls._POINT_CLS.as_point(inter_bottom_right),
@@ -1784,6 +1953,11 @@ class _BaseRect[
         return self._POINT_CLS._as_item(r[1, 1] - r[0, 1])
 
     @property
+    def center(self) -> Point:
+        r = self.view(np.ndarray)
+        return Point((float(r[0, 0]) + float(r[1, 0])) / 2.0, (float(r[0, 1]) + float(r[1, 1])) / 2.0)
+
+    @property
     def area(self) -> ItemT:
         r = self.view(np.ndarray)
         return abs(self._POINT_CLS._as_item((r[1, 0] - r[0, 0]) * (r[1, 1] - r[0, 1])))
@@ -1833,10 +2007,23 @@ class _BaseRect[
         clipped_x = np.clip(pts.x, rect[0, 1], rect[1, 1])
         return np.stack((clipped_y, clipped_x), axis=-1).view(PointArray)
 
-    @property
-    def center(self) -> Point:
-        r = self.view(np.ndarray)
-        return Point((float(r[0, 0]) + float(r[1, 0])) / 2.0, (float(r[0, 1]) + float(r[1, 1])) / 2.0)
+    @overload
+    def round(self, decimals: Literal[0] = 0, out: None = None) -> IntRect: ...
+    @overload
+    def round(self, decimals: int, out: None = None) -> Self: ...
+    def round(self, decimals: int = 0, out: Any = None) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+        if out is not None:
+            raise TypeError("Rect objects are immutable and do not support 'out'")
+        if np.issubdtype(self._DTYPE.type, np.integer):
+            return self
+        r = np.round(self.view(np.ndarray), decimals=decimals)
+        return IntRect._wrap_as_rect(r) if decimals <= 0 else self._wrap_as_rect(r)
+
+    def ceil(self) -> IntRect:  # type: ignore[override]
+        return self if isinstance(self, IntRect) else IntRect._wrap_as_rect(np.ceil(self.view(np.ndarray)))
+
+    def floor(self) -> IntRect:  # type: ignore[override]
+        return self if isinstance(self, IntRect) else IntRect._wrap_as_rect(np.floor(self.view(np.ndarray)))
 
     def as_int(self) -> _BaseRect[np.int64, int, IntPoint, IntPointArray[Literal[2]]]:  # type: ignore
         return IntRect(self.p0.as_int(), self.p1.as_int())
@@ -1964,19 +2151,27 @@ class Rect(
     _POINT_CLS = Point
     _ARRAY_CLS = PointArray
 
+    if TYPE_CHECKING:
+
+        @overload
+        def __new__(cls, rect_or_p0: RectLike | PointLike) -> Self: ...
+        @overload
+        def __new__(cls, rect_or_p0: PointLike, p1: PointLike) -> Self: ...
+        def __new__(cls, rect_or_p0: Any, p1: Any = None) -> Self: ...
+
     @classmethod
     def from_center(cls, center: PointLike, shape: float | PointLike) -> Self:
         c = Point.as_point(center, copy=False)
-        halfS = Point.as_point(shape, copy=False) / 2
+        halfS = (Point(shape, shape) if np.isscalar(shape) else Point.as_point(shape, copy=False)) / 2  # pyright: ignore[reportArgumentType]
         return cls._from_points(c - halfS, c + halfS)
 
     @classmethod
     @functools.cache
-    def empty(cls) -> Self:
+    def EMPTY(cls) -> Self:
         return cls._from_points(Point(float("inf"), float("inf")), Point(float("-inf"), float("-inf")))
 
     def is_empty(self) -> bool:
-        if self is Rect.empty():
+        if self is Rect.EMPTY():
             return True
         rect = self.view(np.ndarray)
         return not np.isfinite(rect).all() and bool(np.isposinf(rect[1]).all() and np.isneginf(rect[0]).all())
@@ -2002,6 +2197,13 @@ class IntRect(
     _DTYPE = np.dtype(np.int64)
     _POINT_CLS = IntPoint
     _ARRAY_CLS = IntPointArray
+    if TYPE_CHECKING:
+
+        @overload
+        def __new__(cls, rect_or_p0: IntRectLike | IntPointLike) -> Self: ...
+        @overload
+        def __new__(cls, rect_or_p0: IntPointLike, p1: IntPointLike) -> Self: ...
+        def __new__(cls, rect_or_p0: Any, p1: Any = None) -> Self: ...
 
     @classmethod
     def as_rect(cls, s: RectLike | PointLike, *, copy: bool = False) -> Self:
@@ -2023,11 +2225,11 @@ class IntRect(
 
     @classmethod
     @functools.cache
-    def empty(cls) -> Self:
+    def EMPTY(cls) -> Self:
         return cls._from_points(IntPoint(_INT_MAX, _INT_MAX), IntPoint(_INT_MIN, _INT_MIN))
 
     def is_empty(self) -> bool:
-        if self is IntRect.empty():
+        if self is IntRect.EMPTY():
             return True
         return self.top == _INT_MAX and self.left == _INT_MAX and self.bottom == _INT_MIN and self.right == _INT_MIN
 

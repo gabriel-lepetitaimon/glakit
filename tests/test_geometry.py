@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import pytest
@@ -44,8 +44,9 @@ class TestPoint:
         assert Point((1, 2)) == Point(1.0, 2.0)
         assert Point("(3.5, 4.5)") == Point(3.5, 4.5)
         assert Point(np.array([5, 6])) == Point(5.0, 6.0)
-        assert Point(7) == Point(7.0, 7.0)
 
+        with pytest.raises(TypeError):
+            assert Point(7)  # type: ignore
         with pytest.raises(TypeError):
             Point((1, 2), 3)  # type: ignore
         with pytest.raises(TypeError):
@@ -137,6 +138,30 @@ class TestPoint:
         assert isinstance(d_arr, np.ndarray)
         np.testing.assert_allclose(d_arr, [5.0, 10.0])
 
+    def test_round_ceil_floor(self):
+        p = Point(1.24, 2.76)
+        assert p.floor() == IntPoint(1, 2) and isinstance(p.floor(), IntPoint)
+        assert p.ceil() == IntPoint(2, 3) and isinstance(p.ceil(), IntPoint)
+        assert p.round() == IntPoint(1, 3) and isinstance(p.round(), IntPoint)
+        assert p.round(0) == IntPoint(1, 3) and isinstance(p.round(0), IntPoint)
+        assert p.round(-1) == IntPoint(0, 0) and isinstance(p.round(-1), IntPoint)
+
+        p_dec = p.round(1)
+        assert isinstance(p_dec, Point)
+        assert p_dec == Point(1.2, 2.8)
+        with pytest.raises(ValueError):
+            p_dec[0] = 0.0  # type: ignore
+
+        with pytest.raises(TypeError):
+            p.round(out=np.empty(2))  # type: ignore
+
+        # IntPoint -> retourne self
+        ip = IntPoint(3, 4)
+        assert ip.floor() is ip
+        assert ip.ceil() is ip
+        assert ip.round() is ip
+        assert ip.round(2) is ip
+
 
 class TestIntPoint:
     def test_creation_and_promotion(self):
@@ -187,7 +212,7 @@ class TestIntPoint:
         assert ip3.x == 6
 
         with pytest.raises(TypeError):
-            IntPoint((1.5, 2.5))
+            IntPoint((1.5, 2.5))  # type: ignore[arg-type]
         with pytest.raises(TypeError):
             IntPoint("(1.5, 2.5)")
 
@@ -263,6 +288,91 @@ class TestPointArray:
         assert isinstance(p + arr, PointArray)
         assert isinstance(arr + p, PointArray)
 
+    def test_transpose_downgrades_to_ndarray(self):
+        pts = PointArray([(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)])
+
+        t1 = pts.T
+        assert type(t1) is np.ndarray
+        assert t1.shape == (2, 3)
+        assert t1.dtype == np.float64
+        assert np.shares_memory(t1, pts)
+        np.testing.assert_allclose(t1, [[1.0, 3.0, 5.0], [2.0, 4.0, 6.0]])
+
+        t2 = pts.transpose()
+        assert type(t2) is np.ndarray
+        assert t2.shape == (2, 3)
+        assert np.shares_memory(t2, pts)
+
+        # Transpose with explicit axes (1, 0) also yields raw ndarray of shape (2, 3)
+        t3 = pts.transpose(1, 0)
+        assert type(t3) is np.ndarray
+        assert t3.shape == (2, 3)
+
+    def test_advanced_indexing_return_types(self):
+        pts = PointArray([(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)])
+
+        # Single-axis slicing & fancy indexing preserve PointArray
+        assert isinstance(pts[1:3], PointArray) and pts[1:3].shape == (2, 2)
+        assert isinstance(pts[[0, 2]], PointArray) and pts[[0, 2]].shape == (2, 2)
+        mask = np.array([True, False, True, False])
+        assert isinstance(pts[mask], PointArray) and pts[mask].shape == (2, 2)
+        assert isinstance(pts[...], PointArray) and pts[...].shape == (4, 2)
+        assert isinstance(pts[..., :], PointArray) and pts[..., :].shape == (4, 2)
+
+        # Scalar 2D indexing yields float scalar
+        val = pts[1, 0]
+        assert isinstance(val, (float, np.floating))
+        assert val == 3.0
+
+        # Column / row slice 2D indexing downgrades to 1D ndarray
+        col_y = pts[:, 0]
+        assert type(col_y) is np.ndarray and col_y.shape == (4,)
+        row_1 = pts[1, :]
+        assert type(row_1) is np.ndarray and row_1.shape == (2,)
+
+        # 2D slice indexing preserves PointArray when width remains 2, downgrades otherwise
+        sub_2d = pts[1:3, :]
+        assert isinstance(sub_2d, PointArray) and sub_2d.shape == (2, 2)
+        narrow = pts[1:3, :1]
+        assert type(narrow) is np.ndarray and narrow.shape == (2, 1)
+
+        # Adding a None axis promotes to PointMap
+        pm_row = pts[None]
+        assert isinstance(pm_row, PointMap) and pm_row.shape == (1, 4, 2)
+        pm_col = pts[:, None]
+        assert isinstance(pm_col, PointMap) and pm_col.shape == (4, 1, 2)
+
+    def test_round_ceil_floor(self):
+        pts = PointArray([(1.24, 2.76), (-1.6, 3.1)])
+
+        fl = pts.floor()
+        assert isinstance(fl, IntPointArray) and fl.dtype == np.int64
+        np.testing.assert_array_equal(fl, [[1, 2], [-2, 3]])
+
+        cl = pts.ceil()
+        assert isinstance(cl, IntPointArray) and cl.dtype == np.int64
+        np.testing.assert_array_equal(cl, [[2, 3], [-1, 4]])
+
+        rd0 = pts.round()
+        assert isinstance(rd0, IntPointArray) and rd0.dtype == np.int64
+        np.testing.assert_array_equal(rd0, [[1, 3], [-2, 3]])
+
+        rd1 = pts.round(1)
+        assert isinstance(rd1, PointArray) and rd1.dtype == np.float64
+        np.testing.assert_allclose(rd1, [[1.2, 2.8], [-1.6, 3.1]])
+
+        # Support de out=
+        out = np.empty((2, 2), dtype=np.float64)
+        ret = pts.round(1, out=out)
+        assert ret is out
+        np.testing.assert_allclose(out, [[1.2, 2.8], [-1.6, 3.1]])
+
+        # IntPointArray -> copie IntPointArray
+        ipts = IntPointArray([(1, 2), (3, 4)])
+        assert isinstance(ipts.floor(), IntPointArray) and np.shares_memory(ipts.floor(), ipts) is False
+        assert isinstance(ipts.ceil(), IntPointArray)
+        assert isinstance(ipts.round(), IntPointArray)
+
 
 class TestIntPointArray:
     def test_creation_and_promotion(self):
@@ -288,6 +398,26 @@ class TestIntPointArray:
         res_float = ipts + (0.5, 0.5)
         assert isinstance(res_float, PointArray)
         assert res_float[0] == Point(1.5, 2.5)
+
+    def test_transpose_and_indexing_types(self):
+        ipts = IntPointArray([(1, 2), (3, 4), (5, 6)])
+
+        t = ipts.T
+        assert type(t) is np.ndarray
+        assert t.shape == (2, 3)
+        assert t.dtype == np.int64
+        assert np.shares_memory(t, ipts)
+
+        # Scalar 2D indexing yields int scalar
+        assert ipts[2, 1] == 6
+
+        # Column extraction yields 1D int64 ndarray
+        col = ipts[:, 1]
+        assert type(col) is np.ndarray and col.dtype == np.int64 and col.shape == (3,)
+
+        # Adding None axis promotes to IntPointMap
+        ipm = ipts[None, :]
+        assert isinstance(ipm, IntPointMap) and ipm.shape == (1, 3, 2)
 
 
 # =====================================================================
@@ -523,6 +653,79 @@ class TestPointMaps:
         with pytest.raises(ValidationError):
             FlowModel.model_validate({**payload, "grid": [[(1.5, 2.0), (3, 4)], [(5, 6), (7, 8)]]})
 
+    def test_broadcasting_pairwise_differences(self) -> None:
+        pts = PointArray([(0.0, 0.0), (0.0, 3.0), (4.0, 0.0)])
+
+        row_map = pts[None, :]  # PointMap[Literal, 3] -> shape (1, 3, 2)
+        col_map = pts[:, None]  # PointMap[3, Literal] -> shape (3, 1, 2)
+        assert isinstance(row_map, PointMap) and row_map.shape == (1, 3, 2)
+        assert isinstance(col_map, PointMap) and col_map.shape == (3, 1, 2)
+
+        # Broadcasting (1, 3, 2) - (3, 1, 2) -> PointMap de forme (3, 3, 2)
+        diff_map = row_map - col_map
+        assert isinstance(diff_map, PointMap)
+        assert diff_map.shape == (3, 3, 2)
+
+        # Matrice des distances 3x3 (triangle 3-4-5)
+        dist_mat = diff_map.norm
+        expected = np.array(
+            [
+                [0.0, 3.0, 4.0],
+                [3.0, 0.0, 5.0],
+                [4.0, 5.0, 0.0],
+            ],
+            dtype=np.float64,
+        )
+        np.testing.assert_allclose(dist_mat, expected)
+
+    def test_transpose_downgrades_to_ndarray(self) -> None:
+        vm = VectorMap.zeros((2, 3))
+        pm = PointMap.zeros((2, 3))
+
+        vm_t = vm.T
+        assert type(vm_t) is np.ndarray
+        assert vm_t.shape == (2, 3, 2)
+        assert vm_t.dtype == np.float32
+        assert np.shares_memory(vm_t, vm)
+
+        pm_t = pm.transpose(1, 0, 2)
+        assert type(pm_t) is np.ndarray
+        assert pm_t.shape == (3, 2, 2)
+        assert pm_t.dtype == np.float64
+        assert np.shares_memory(pm_t, pm)
+
+    def test_round_ceil_floor(self) -> None:
+        vm = VectorMap([[(1.24, 2.76), (-1.6, 3.1)]])
+        pm = PointMap([[(1.24, 2.76), (-1.6, 3.1)]])
+
+        for m in (vm, pm):
+            fl = m.floor()
+            assert isinstance(fl, IntPointMap) and fl.dtype == np.int64
+            np.testing.assert_array_equal(fl.ndarray, [[[1, 2], [-2, 3]]])
+
+            cl = m.ceil()
+            assert isinstance(cl, IntPointMap) and cl.dtype == np.int64
+            np.testing.assert_array_equal(cl.ndarray, [[[2, 3], [-1, 4]]])
+
+            rd0 = m.round()
+            assert isinstance(rd0, IntPointMap) and rd0.dtype == np.int64
+            np.testing.assert_array_equal(rd0.ndarray, [[[1, 3], [-2, 3]]])
+
+        # decimals > 0 conserve le type et la précision (float32 vs float64)
+        vm_rd1 = vm.round(1)
+        assert isinstance(vm_rd1, VectorMap) and vm_rd1.dtype == np.float32
+        np.testing.assert_allclose(vm_rd1.ndarray, np.array([[[1.2, 2.8], [-1.6, 3.1]]], dtype=np.float32))
+
+        pm_rd1 = pm.round(1)
+        assert isinstance(pm_rd1, PointMap) and pm_rd1.dtype == np.float64
+        np.testing.assert_allclose(pm_rd1.ndarray, [[[1.2, 2.8], [-1.6, 3.1]]])
+
+        # IntPointMap
+        ipm = IntPointMap([[(1, 2), (3, 4)]])
+        assert isinstance(ipm.round(), IntPointMap) and not np.shares_memory(ipm.round(), ipm)
+        assert isinstance(ipm.ceil(), IntPointMap)
+        assert isinstance(ipm.floor(), IntPointMap)
+
 
 # =====================================================================
 # Tests for Rect and IntRect
@@ -577,6 +780,12 @@ class TestRect:
         assert isinstance(corners, PointArray)
         assert corners.shape == (4, 2)
 
+        # Transpose on Rect downgrades to raw (2, 2) ndarray
+        rt = r.T
+        assert type(rt) is np.ndarray
+        assert rt.shape == (2, 2)
+        assert np.shares_memory(rt, r)
+
     def test_copy_and_equality(self):
         r1 = Rect((0, 0), (10, 20))
         r2 = Rect(r1)
@@ -603,7 +812,7 @@ class TestRect:
         assert uni == Rect((0, 0), (15, 15))
 
         # Union with empty Rect should return the other Rect
-        assert uni | Rect.empty() is uni
+        assert uni | Rect.EMPTY() is uni
 
         # Disjoint intersection -> empty
         disjoint = r1 & Rect((20, 20), (30, 30))
@@ -628,6 +837,35 @@ class TestRect:
 
         bbox = Rect.bounding_box(pts)
         assert bbox == Rect((5, 25), (35, 50))
+
+    def test_round_ceil_floor(self):
+        r = Rect((1.24, 2.76), (5.61, 8.19))
+
+        fl = r.floor()
+        assert isinstance(fl, IntRect) and fl == IntRect((1, 2), (5, 8))
+        with pytest.raises(TypeError):
+            fl[0] = (0, 0)  # type: ignore
+
+        cl = r.ceil()
+        assert isinstance(cl, IntRect) and cl == IntRect((2, 3), (6, 9))
+
+        rd0 = r.round()
+        assert isinstance(rd0, IntRect) and rd0 == IntRect((1, 3), (6, 8))
+
+        rd1 = r.round(1)
+        assert isinstance(rd1, Rect) and rd1 == Rect((1.2, 2.8), (5.6, 8.2))
+        with pytest.raises(ValueError):
+            rd1.ndarray[0, 0] = 0.0
+
+        with pytest.raises(TypeError):
+            r.round(out=np.empty((2, 2)))  # type: ignore
+
+        # IntRect -> retourne self
+        ir = IntRect((1, 2), (3, 4))
+        assert ir.floor() is ir
+        assert ir.ceil() is ir
+        assert ir.round() is ir
+        assert ir.round(2) is ir
 
 
 class TestIntRect:
@@ -669,7 +907,7 @@ class TestIntRect:
         assert isinstance(inter_mix, Rect)
         assert inter_mix == Rect((2.5, 2.5), (8.5, 8.5))
 
-        # Disjoint IntRect intersection -> IntRect.empty()
+        # Disjoint IntRect intersection -> IntRect.EMPTY()
         empty_inter = ir1 & IntRect((20, 20), (30, 30))
         assert isinstance(empty_inter, IntRect)
         assert empty_inter.is_empty()
@@ -791,3 +1029,118 @@ class TestPydanticIntegration:
 
         with pytest.raises(pydantic.ValidationError):
             ann.ipts = (1.5, 2.5)  # type: ignore
+
+
+if TYPE_CHECKING:
+    from typing import Any, assert_type
+
+    from glakit.typing import Float1DArray, Int1DArray
+
+    def _check_static_typing() -> None:
+        # 1. Point & IntPoint indexing
+        p = Point(1.0, 2.0)
+        ip = IntPoint(1, 2)
+        assert_type(p[0], float)
+        assert_type(ip[0], int)
+        assert_type(p[:1], Float1DArray)
+        assert_type(ip[:1], Int1DArray)
+        assert_type(p[None], PointArray[Literal[1]])
+        assert_type(ip[None], IntPointArray[Literal[1]])
+
+        # 2. PointArray & IntPointArray indexing and .T
+        pts: PointArray[Literal[3]] = PointArray([(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)])
+        ipts: IntPointArray[Literal[3]] = IntPointArray([(1, 2), (3, 4), (5, 6)])
+
+        assert_type(pts[0], Point)
+        assert_type(ipts[0], IntPoint)
+
+        assert_type(pts[1:], PointArray[Literal[3]])
+        assert_type(pts[[0, 2]], PointArray[Literal[3]])
+        assert_type(pts[...], PointArray[Literal[3]])
+        assert_type(pts[..., :], PointArray[Literal[3]])
+        assert_type(pts[1:3, :], PointArray[Literal[3]])
+
+        assert_type(pts[0, 1], float)
+        assert_type(ipts[0, 1], int)
+        assert_type(pts[:, 0], Float1DArray)
+        assert_type(pts[0, :], Float1DArray)
+        assert_type(ipts[:, 1], Int1DArray)
+
+        assert_type(pts[None], PointMap[Any, Any])
+        assert_type(pts[:, None], PointMap[Any, Any])
+        assert_type(ipts[None, :], IntPointMap[Any, Any])
+
+        # Transpose (.T) must not stay PointArray
+        assert_type(pts.T, np.ndarray[tuple[Literal[2], Literal[3]], np.dtype[np.float64]])
+        assert_type(ipts.T, np.ndarray[tuple[Literal[2], Literal[3]], np.dtype[np.int64]])
+
+        # 3. PointMap, IntPointMap & VectorMap indexing and .T
+        pm: PointMap[Literal[2], Literal[3]] = PointMap.zeros((2, 3))
+        ipm: IntPointMap[Literal[2], Literal[3]] = IntPointMap.zeros((2, 3))
+        vm: VectorMap[Literal[2], Literal[3]] = VectorMap.zeros((2, 3))
+
+        assert_type(pm[0], PointArray[Literal[3]])
+        assert_type(ipm[0], IntPointArray[Literal[3]])
+        assert_type(vm[0], PointArray[Literal[3]])
+
+        assert_type(pm[0, 1], Point)
+        assert_type(ipm[0, 1], IntPoint)
+        assert_type(vm[0, 1], Point)
+
+        assert_type(pm[:, :2], PointMap[Literal[2], Literal[3]])
+        assert_type(vm[:, :2], VectorMap[Literal[2], Literal[3]])
+
+        assert_type(pm[0, 1, 0], float)
+        assert_type(ipm[0, 1, 0], int)
+        assert_type(vm[0, 1, 0], float)
+
+        assert_type(pm[..., 0], np.ndarray[tuple[Literal[2], Literal[3]], np.dtype[np.float64]])
+        assert_type(vm[..., 0], np.ndarray[tuple[Literal[2], Literal[3]], np.dtype[np.float32]])
+
+        assert_type(pm.T, np.ndarray[tuple[Literal[2], Literal[3], Literal[2]], np.dtype[np.float64]])
+        assert_type(vm.T, np.ndarray[tuple[Literal[2], Literal[3], Literal[2]], np.dtype[np.float32]])
+
+        # 4. Arithmetic promotion hierarchy
+        assert_type(ip + ip, IntPoint)
+        assert_type(ip + p, Point)
+        assert_type(ipts + ipts, IntPointArray[Literal[3]])
+        assert_type(ipts + pts, PointArray[Literal[3]])
+        assert_type(vm + vm, VectorMap[Any, Any])
+        assert_type(vm + pm, PointMap[Any, Any])
+        assert_type(ipm + ipm, IntPointMap[Any, Any])
+        assert_type(ipm + pm, PointMap[Any, Any])
+        assert_type(ipm + vm, PointMap[Literal[2], Literal[3]])
+        assert_type(vm + ipm, PointMap[Literal[2], Literal[3]])
+
+        # 5. Rect & IntRect
+        r = Rect((0.0, 0.0), (10.0, 10.0))
+        ir = IntRect((0, 0), (10, 10))
+        assert_type(r[0], Point)
+        assert_type(ir[0], IntPoint)
+        assert_type(r[0, 1], float)
+        assert_type(ir[0, 1], int)
+        assert_type(ir & ir, IntRect)
+        assert_type(ir & r, Rect)
+        assert_type(r.T, np.ndarray[tuple[Literal[2], Literal[2]], np.dtype[np.float64]])
+
+        # 6. round / ceil / floor return types
+        assert_type(p.round(), IntPoint)
+        assert_type(p.round(2), Point)
+        assert_type(p.ceil(), IntPoint)
+        assert_type(p.floor(), IntPoint)
+
+        assert_type(pts.round(), IntPointArray[Literal[3]])
+        assert_type(pts.round(2), PointArray[Literal[3]])
+        assert_type(pts.ceil(), IntPointArray[Literal[3]])
+        assert_type(pts.floor(), IntPointArray[Literal[3]])
+
+        assert_type(vm.round(), IntPointMap[Literal[2], Literal[3]])
+        assert_type(vm.round(2), VectorMap[Literal[2], Literal[3]])
+        assert_type(pm.round(2), PointMap[Literal[2], Literal[3]])
+        assert_type(vm.ceil(), IntPointMap[Literal[2], Literal[3]])
+        assert_type(vm.floor(), IntPointMap[Literal[2], Literal[3]])
+
+        assert_type(r.round(), IntRect)
+        assert_type(r.round(2), Rect)
+        assert_type(r.ceil(), IntRect)
+        assert_type(r.floor(), IntRect)
